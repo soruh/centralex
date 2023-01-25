@@ -1,5 +1,3 @@
-use std::{ffi::CString, mem::discriminant};
-
 use anyhow::bail;
 use bytemuck::{Pod, Zeroable};
 use tokio::{
@@ -7,25 +5,13 @@ use tokio::{
     net::tcp::{ReadHalf, WriteHalf},
 };
 
-pub const fn reject_static<const N: usize>(message: &[u8; N]) -> [u8; N + 2] {
-    let mut pkg = [0u8; N + 2];
-    pkg[0] = 4;
-    pkg[1] = message.len() as u8;
-    let mut i = 0;
-    while i < message.len() {
-        pkg[i + 2] = message[i];
-        i += 1;
-    }
-    pkg
-}
-
-pub const REJECT_OCC: &[u8; 6] = b"\x04\x04occ\x00";
-pub const REJECT_NC: &[u8; 5] = b"\x04\x03nc\x00";
+pub const REJECT_OOP: &[u8; 6] = b"\x04\x04oop\x00";
+pub const REJECT_TIMEOUT: &[u8; 10] = b"\x04\x08timeout\x00";
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PacketKind {
-    Unknown(u8),
+    Ping = 0x00,
     DynIpUpdate = 0x01,
     DynIpUpdateResponse = 0x02,
     End = 0x03,
@@ -34,6 +20,7 @@ pub enum PacketKind {
     RemConfirm = 0x82,
     RemCall = 0x83,
     RemAck = 0x84,
+    Unknown(u8),
     Error = 0xff,
 }
 
@@ -42,6 +29,7 @@ impl PacketKind {
         use PacketKind::*;
 
         match raw {
+            0x00 => Ping,
             0x01 => DynIpUpdate,
             0x02 => DynIpUpdateResponse,
             0x03 => End,
@@ -55,11 +43,11 @@ impl PacketKind {
         }
     }
 
-    fn kind(&self) -> u8 {
+    pub fn raw(&self) -> u8 {
         use PacketKind::*;
 
         match self {
-            Unknown(value) => *value,
+            Ping => 0,
             DynIpUpdate => 0x01,
             DynIpUpdateResponse => 0x02,
             End => 0x03,
@@ -69,6 +57,8 @@ impl PacketKind {
             RemCall => 0x83,
             RemAck => 0x84,
             Error => 0xff,
+
+            Unknown(value) => *value,
         }
     }
 }
@@ -111,10 +101,18 @@ impl Packet {
         }
     }
 
-    pub async fn recv(stream: &mut ReadHalf<'_>) -> std::io::Result<Packet> {
-        let mut packet = Packet::default();
-        packet.recv_into(stream).await?;
-        Ok(packet)
+    pub async fn recv_into_cancelation_safe(
+        &mut self,
+        stream: &mut ReadHalf<'_>,
+    ) -> std::io::Result<()> {
+        // Makes sure all data is available before reading
+        let header_bytes = bytemuck::bytes_of_mut(&mut self.header);
+        stream.peek(header_bytes).await?;
+        self.data.resize(self.header.length as usize + 2, 0);
+        stream.peek(&mut self.data).await?;
+
+        // All data is available. Read the data
+        self.recv_into(stream).await
     }
 
     pub async fn recv_into(&mut self, stream: &mut ReadHalf<'_>) -> std::io::Result<()> {
@@ -161,7 +159,7 @@ impl Packet {
 pub async fn dyn_ip_update(number: u32, pin: u16, port: u16) -> anyhow::Result<std::net::Ipv4Addr> {
     let mut packet = Packet::default();
     packet.header = Header {
-        kind: PacketKind::DynIpUpdate.kind(),
+        kind: PacketKind::DynIpUpdate.raw(),
         length: 8,
     };
 
@@ -171,7 +169,8 @@ pub async fn dyn_ip_update(number: u32, pin: u16, port: u16) -> anyhow::Result<s
     packet.data.extend_from_slice(&pin.to_le_bytes());
     packet.data.extend_from_slice(&port.to_le_bytes());
 
-    let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", 11811)).await?;
+    let mut socket = tokio::net::TcpStream::connect(("tlnserv.teleprinter.net", 11811)).await?;
+    // 127.0.0.1
 
     let (mut reader, mut writer) = socket.split();
 
