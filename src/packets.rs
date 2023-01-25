@@ -157,6 +157,8 @@ impl Packet {
 }
 
 pub async fn dyn_ip_update(number: u32, pin: u16, port: u16) -> anyhow::Result<std::net::Ipv4Addr> {
+    println!("dyn ip update: number={number} port={port}...");
+
     let mut packet = Packet::default();
     packet.header = Header {
         kind: PacketKind::DynIpUpdate.raw(),
@@ -169,8 +171,7 @@ pub async fn dyn_ip_update(number: u32, pin: u16, port: u16) -> anyhow::Result<s
     packet.data.extend_from_slice(&pin.to_le_bytes());
     packet.data.extend_from_slice(&port.to_le_bytes());
 
-    let mut socket = tokio::net::TcpStream::connect(("tlnserv.teleprinter.net", 11811)).await?;
-    // 127.0.0.1
+    let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", 11811)).await?;
 
     let (mut reader, mut writer) = socket.split();
 
@@ -178,7 +179,7 @@ pub async fn dyn_ip_update(number: u32, pin: u16, port: u16) -> anyhow::Result<s
 
     packet.recv_into(&mut reader).await?;
 
-    match packet.kind() {
+    let res = match packet.kind() {
         PacketKind::DynIpUpdateResponse => Ok(<[u8; 4]>::try_from(packet.data)
             .map_err(|err| {
                 anyhow::anyhow!(
@@ -205,5 +206,9 @@ pub async fn dyn_ip_update(number: u32, pin: u16, port: u16) -> anyhow::Result<s
         }
 
         _ => bail!("server returned unexpected packet"),
-    }
+    };
+
+    println!("dyn ip update result: {res:?}");
+
+    res
 }

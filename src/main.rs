@@ -465,11 +465,11 @@ async fn connection_handler(
                     break Result::Packet { packet }
                 }
             },
-            _ = sleep(now.saturating_duration_since(last_ping_sent_at).saturating_sub(SEND_PING_INTERVAL)) => {
+            _ = sleep(SEND_PING_INTERVAL.saturating_sub(now.saturating_duration_since(last_ping_sent_at))) => {
                 writer.write_all(bytemuck::bytes_of(& Header { kind: PacketKind::Ping.raw(), length: 0 })).await?;
                 last_ping_sent_at = now;
             }
-            _ = sleep(now.saturating_duration_since(last_ping_received_at).saturating_sub(PING_TIMEOUT)) => {
+            _ = sleep(PING_TIMEOUT.saturating_sub(now.saturating_duration_since(last_ping_received_at))) => {
                 writer.write_all(REJECT_TIMEOUT).await?;
                 return Ok(());
             }
