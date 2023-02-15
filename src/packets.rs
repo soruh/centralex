@@ -183,7 +183,7 @@ pub async fn dyn_ip_update(
     pin: u16,
     port: u16,
 ) -> anyhow::Result<std::net::Ipv4Addr> {
-    println!("dyn ip update: number={number} port={port}...");
+    println!("starting dyn ip update for number={number} port={port}...");
 
     let mut packet = Packet::default();
     packet.header = Header {
@@ -234,7 +234,7 @@ pub async fn dyn_ip_update(
         _ => bail!("server returned unexpected packet"),
     };
 
-    println!("dyn ip update result: {res:?}");
+    println!("finished dyn ip update result: {res:?}");
 
     res
 }
