@@ -145,7 +145,10 @@ impl PortHandler {
     }
 
     fn load_or_default(cache: &Path) -> Self {
-        Self::load(cache).unwrap_or(Self::default())
+        Self::load(cache).unwrap_or_else(|err| {
+            println!("failed to parse cache file at {cache:?} using empty cache. error: {err}");
+            Self::default()
+        })
     }
 
     fn update_allowed_ports(&mut self, allowed_ports: &AllowedPorts) {
