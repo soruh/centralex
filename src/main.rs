@@ -12,7 +12,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, Context};
 use packets::{Header, Packet, RemConnect};
 use serde::{Deserialize, Deserializer, Serialize};
 use tokio::{
@@ -409,7 +409,9 @@ async fn connection_handler(
 
         // make sure the client is authenticated before opening any ports
         if !authenticated {
-            let _ip = dyn_ip_update(&config.dyn_ip_server, number, pin, port).await?;
+            let _ip = dyn_ip_update(&config.dyn_ip_server, number, pin, port)
+                .await
+                .context("dy-ip update")?;
             authenticated = true;
             updated_server = true;
         }
@@ -432,7 +434,9 @@ async fn connection_handler(
                 // we need to update the server here once a port that can be opened
                 // has been found
                 if !updated_server {
-                    let _ip = dyn_ip_update(&config.dyn_ip_server, number, pin, port).await?;
+                    let _ip = dyn_ip_update(&config.dyn_ip_server, number, pin, port)
+                        .await
+                        .context("dy-ip update")?;
                 }
 
                 port_handler
