@@ -603,6 +603,9 @@ async fn connection_handler(
                 )?;
             }
 
+            stream.set_nodelay(true)?;
+            client.set_nodelay(true)?;
+
             select! {
                 _ = tokio::io::copy_bidirectional(stream, &mut client) => {}
                 _ = sleep(CALL_TIMEOUT) => {}
