@@ -49,10 +49,7 @@ struct Config {
     dyn_ip_server: SocketAddr,
 }
 
-fn parse_socket_addr<'de, D>(deserializer: D) -> Result<SocketAddr, D::Error>
-where
-    D: Deserializer<'de>,
-{
+fn parse_socket_addr<'de, D: Deserializer<'de>>(deserializer: D) -> Result<SocketAddr, D::Error> {
     use serde::de::Error;
 
     let addr = String::deserialize(deserializer)?
@@ -551,6 +548,7 @@ async fn connection_handler(
                 IpAddr::V4(addr) => packet.data.extend_from_slice(&addr.octets()),
                 IpAddr::V6(addr) => packet.data.extend_from_slice(&addr.octets()),
             }
+            packet.data.clear(); // TODO: remove
             packet.header = Header {
                 kind: PacketKind::RemCall.raw(),
                 length: packet.data.len() as u8,
