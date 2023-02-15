@@ -184,7 +184,7 @@ impl PortHandler {
         listener: TcpListener,
         packet: Packet,
     ) -> anyhow::Result<()> {
-        println!("starting rejector: for port {port} with packet {packet:?}");
+        println!("starting rejector: for port {port} with {packet:?}");
 
         let port_guard = PortGuard::start(listener, packet);
 
