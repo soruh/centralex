@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{fmt::Debug, net::SocketAddr};
 
 use anyhow::bail;
 use bytemuck::{Pod, Zeroable};
@@ -65,17 +65,36 @@ impl PacketKind {
     }
 }
 
-#[derive(Default, Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Default, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct Header {
     pub kind: u8,
     pub length: u8,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct Packet {
     pub header: Header,
     pub data: Vec<u8>,
+}
+
+impl Debug for Packet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let data = &self.data;
+
+        let str_data = std::str::from_utf8(&data[..data.len() - 1]).ok();
+
+        let data = if let Some(str_data) = str_data.as_ref() {
+            str_data as &dyn Debug
+        } else {
+            &data as &dyn Debug
+        };
+
+        f.debug_struct("Packet")
+            .field("kind", &PacketKind::from_u8(self.header.kind))
+            .field("data", &data)
+            .finish()
+    }
 }
 
 #[derive(Default, Debug, Clone, Copy)]
