@@ -5,7 +5,7 @@ use std::{
     fmt::Debug,
     fs::File,
     io::{BufReader, BufWriter},
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::{anyhow, bail};
 use packets::{Header, Packet, RemConnect};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
@@ -42,23 +42,32 @@ type Port = u16;
 type Number = u32;
 type UnixTimestamp = u64;
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Config {
     allowed_ports: AllowedPorts,
+    #[serde(deserialize_with = "parse_socket_addr")]
+    dyn_ip_server: SocketAddr,
+}
+
+fn parse_socket_addr<'de, D>(deserializer: D) -> Result<SocketAddr, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let addr = String::deserialize(deserializer)?
+        .to_socket_addrs()
+        .map_err(|err| D::Error::custom(err))?
+        .next()
+        .ok_or_else(|| D::Error::invalid_length(0, &"one or more"))?;
+
+    Ok(addr)
 }
 
 impl Config {
-    fn load(cache: &Path) -> std::io::Result<Self> {
+    fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
         println!("loading config");
-        Ok(serde_json::from_reader(BufReader::new(File::open(cache)?))?)
-    }
-
-    fn load_or_default(cache: &Path) -> std::io::Result<Self> {
-        match Self::load(cache) {
-            Ok(cache) => Ok(cache),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(err) => Err(err),
-        }
+        Ok(serde_json::from_reader(BufReader::new(File::open(path)?))?)
     }
 }
 
@@ -364,6 +373,7 @@ struct HandlerMetadata {
 }
 
 async fn connection_handler(
+    config: &Config,
     handler_metadata: &mut HandlerMetadata,
     port_handler: &Mutex<PortHandler>,
     stream: &mut TcpStream,
@@ -397,8 +407,9 @@ async fn connection_handler(
             return Ok(());
         };
 
+        // make sure the client is authenticated before opening any ports
         if !authenticated {
-            let _ip = dyn_ip_update(number, pin, port).await?;
+            let _ip = dyn_ip_update(&config.dyn_ip_server, number, pin, port).await?;
             authenticated = true;
             updated_server = true;
         }
@@ -417,8 +428,11 @@ async fn connection_handler(
                 // to the listener in the error handler.
                 handler_metadata.listener = Some(listener);
 
+                // if we authenticated a client for a port we then failed to open
+                // we need to update the server here once a port that can be opened
+                // has been found
                 if !updated_server {
-                    let _ip = dyn_ip_update(number, pin, port).await?;
+                    let _ip = dyn_ip_update(&config.dyn_ip_server, number, pin, port).await?;
                 }
 
                 port_handler
@@ -626,7 +640,7 @@ async fn connection_handler(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = Config::load_or_default("config.json".as_ref())?;
+    let config = Arc::new(Config::load("config.json")?);
 
     if config.allowed_ports.0.is_empty() {
         panic!("no allowed ports");
@@ -668,11 +682,14 @@ async fn main() -> anyhow::Result<()> {
         println!("connection from {addr}");
 
         let port_handler = port_handler.clone();
+        let config = config.clone();
 
         let mut handler_metadata = HandlerMetadata::default();
 
         tokio::spawn(async move {
-            let res = connection_handler(&mut handler_metadata, &port_handler, &mut stream).await;
+            let res =
+                connection_handler(&config, &mut handler_metadata, &port_handler, &mut stream)
+                    .await;
 
             if let Err(err) = res {
                 println!("client at {addr} had an error: {err}");
