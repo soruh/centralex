@@ -544,11 +544,12 @@ async fn connection_handler(
             println!("got caller from: {addr}");
 
             packet.data.clear();
+            /* The I-Telex Clients can't handle data in this packet due to a bug
             match addr.ip() {
                 IpAddr::V4(addr) => packet.data.extend_from_slice(&addr.octets()),
                 IpAddr::V6(addr) => packet.data.extend_from_slice(&addr.octets()),
             }
-            packet.data.clear(); // TODO: remove
+            */
             packet.header = Header {
                 kind: PacketKind::RemCall.raw(),
                 length: packet.data.len() as u8,
