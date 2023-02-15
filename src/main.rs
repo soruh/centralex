@@ -34,8 +34,6 @@ const PORT_OWNERSHIP_TIMEOUT: Duration = Duration::from_secs(1 * 60 * 60);
 const PING_TIMEOUT: Duration = Duration::from_secs(30);
 const SEND_PING_INTERVAL: Duration = Duration::from_secs(20);
 
-const BIND_IP: &str = "0.0.0.0";
-
 mod packets;
 
 type Port = u16;
@@ -45,6 +43,8 @@ type UnixTimestamp = u64;
 #[derive(Debug, Deserialize)]
 struct Config {
     allowed_ports: AllowedPorts,
+    #[serde(deserialize_with = "parse_socket_addr")]
+    listen_addr: SocketAddr,
     #[serde(deserialize_with = "parse_socket_addr")]
     dyn_ip_server: SocketAddr,
 }
@@ -261,7 +261,7 @@ impl PortGuard {
 }
 
 impl PortHandler {
-    fn allocate_port_for_number(&mut self, number: Number) -> Option<Port> {
+    fn allocate_port_for_number(&mut self, config: &Config, number: Number) -> Option<Port> {
         if let Some(port) = self.allocated_ports.get(&number) {
             let already_connected = self
                 .port_state
@@ -277,14 +277,14 @@ impl PortHandler {
             self.free_ports.remove(&port);
             port
         } else {
-            self.try_recover_port()?
+            self.try_recover_port(config)?
         };
 
         assert!(self.allocated_ports.insert(number, port).is_none());
         Some(port)
     }
 
-    fn try_recover_port(&mut self) -> Option<Port> {
+    fn try_recover_port(&mut self, config: &Config) -> Option<Port> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
 
         let mut recovered_port = None;
@@ -301,7 +301,7 @@ impl PortHandler {
                             .saturating_sub(Duration::from_secs(timestamp))
                     );
 
-                    match std::net::TcpListener::bind((BIND_IP, port)) {
+                    match std::net::TcpListener::bind((config.listen_addr.ip(), port)) {
                         Ok(_) => {
                             recovered_port = Some((timestamp, port));
                             return None;
@@ -398,7 +398,10 @@ async fn connection_handler(
     let port = loop {
         let mut updated_server = false;
 
-        let port = port_handler.lock().await.allocate_port_for_number(number);
+        let port = port_handler
+            .lock()
+            .await
+            .allocate_port_for_number(config, number);
 
         println!("allocated port: {:?}", port);
 
@@ -421,7 +424,7 @@ async fn connection_handler(
         let listener = if let Some((listener, _package)) = port_handler.stop_rejector(port).await {
             Ok(listener)
         } else {
-            TcpListener::bind((BIND_IP, port)).await
+            TcpListener::bind((config.listen_addr.ip(), port)).await
         };
 
         match listener {
@@ -683,7 +686,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let listener = TcpListener::bind(("0.0.0.0", 11820)).await?;
+    let listener = TcpListener::bind(config.listen_addr).await?;
 
     while let Ok((mut stream, addr)) = listener.accept().await {
         println!("connection from {addr}");

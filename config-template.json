@@ -1,5 +1,6 @@
 {
     "dyn_ip_server": "127.0.0.1:11811",
+    "listen_addr": "0.0.0.0:11812",
     "allowed_ports": [
         [
             3000,
