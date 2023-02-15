@@ -32,7 +32,7 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 const PORT_RETRY_TIME: Duration = Duration::from_secs(15 * 60);
 const PORT_OWNERSHIP_TIMEOUT: Duration = Duration::from_secs(1 * 60 * 60);
 const PING_TIMEOUT: Duration = Duration::from_secs(30);
-const SEND_PING_INTERVAL: Duration = Duration::from_secs(30);
+const SEND_PING_INTERVAL: Duration = Duration::from_secs(20);
 
 const BIND_IP: &str = "0.0.0.0";
 
@@ -433,6 +433,13 @@ async fn connection_handler(
         };
     };
 
+    packet.header = Header {
+        kind: PacketKind::RemConfirm.raw(),
+        length: 0,
+    };
+    packet.data.clear();
+    packet.send(&mut writer).await?;
+
     #[derive(Debug)]
     enum Result {
         Caller {
@@ -450,6 +457,8 @@ async fn connection_handler(
 
     let result = loop {
         let now = Instant::now();
+        // println!("next ping in {:?}s", SEND_PING_INTERVAL.saturating_sub(now.saturating_duration_since(last_ping_sent_at)).as_secs());
+        // println!("will timeout in in {:?}s", PING_TIMEOUT.saturating_sub(now.saturating_duration_since(last_ping_received_at)).as_secs());
 
         select! {
             caller = listener.accept() => {
@@ -460,14 +469,16 @@ async fn connection_handler(
                 packet.recv_into(&mut reader).await?;
 
                 if packet.kind() == PacketKind::Ping {
-                    last_ping_received_at = now;
+                    // println!("received ping");
+                    last_ping_received_at = Instant::now();
                 } else {
                     break Result::Packet { packet }
                 }
             },
             _ = sleep(SEND_PING_INTERVAL.saturating_sub(now.saturating_duration_since(last_ping_sent_at))) => {
+                // println!("sending ping");
                 writer.write_all(bytemuck::bytes_of(& Header { kind: PacketKind::Ping.raw(), length: 0 })).await?;
-                last_ping_sent_at = now;
+                last_ping_sent_at = Instant::now();
             }
             _ = sleep(PING_TIMEOUT.saturating_sub(now.saturating_duration_since(last_ping_received_at))) => {
                 writer.write_all(REJECT_TIMEOUT).await?;
