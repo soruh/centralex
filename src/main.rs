@@ -360,6 +360,7 @@ impl PortHandler {
 struct HandlerMetadata {
     number: Option<Number>,
     port: Option<Port>,
+    listener: Option<TcpListener>,
 }
 
 async fn connection_handler(
@@ -384,7 +385,7 @@ async fn connection_handler(
     handler_metadata.number = Some(number);
 
     let mut authenticated = false;
-    let (port, listener) = loop {
+    let port = loop {
         let mut updated_server = false;
 
         let port = port_handler.lock().await.allocate_port_for_number(number);
@@ -412,6 +413,10 @@ async fn connection_handler(
 
         match listener {
             Ok(listener) => {
+                // make sure that if we have an error, we still have access
+                // to the listener in the error handler.
+                handler_metadata.listener = Some(listener);
+
                 if !updated_server {
                     let _ip = dyn_ip_update(number, pin, port).await?;
                 }
@@ -424,7 +429,7 @@ async fn connection_handler(
 
                 handler_metadata.port = Some(port);
 
-                break (port, listener);
+                break port;
             }
             Err(_err) => {
                 port_handler.mark_port_error(number, port);
@@ -432,6 +437,8 @@ async fn connection_handler(
             }
         };
     };
+
+    let listener = handler_metadata.listener.as_mut().unwrap(); // we only break from the loop if this is set
 
     packet.header = Header {
         kind: PacketKind::RemConfirm.raw(),
@@ -495,10 +502,14 @@ async fn connection_handler(
             ) {
                 println!("got disconnect packet: {packet:?}");
 
-                port_handler
-                    .lock()
-                    .await
-                    .start_rejector(port, listener, packet)?;
+                port_handler.lock().await.start_rejector(
+                    port,
+                    handler_metadata
+                        .listener
+                        .take()
+                        .expect("tried to start rejector twice"),
+                    packet,
+                )?;
                 return Ok(());
             } else {
                 bail!("unexpected packet: {:?}", packet.kind())
@@ -537,10 +548,14 @@ async fn connection_handler(
 
     match packet.kind() {
         PacketKind::End | PacketKind::Reject => {
-            port_handler
-                .lock()
-                .await
-                .start_rejector(port, listener, packet)?;
+            port_handler.lock().await.start_rejector(
+                port,
+                handler_metadata
+                    .listener
+                    .take()
+                    .expect("tried to start rejector twice"),
+                packet,
+            )?;
 
             return Ok(());
         }
@@ -564,7 +579,14 @@ async fn connection_handler(
                     .or_default()
                     .new_state(PortStatus::InCall);
 
-                port_handler.start_rejector(port, listener, packet)?;
+                port_handler.start_rejector(
+                    port,
+                    handler_metadata
+                        .listener
+                        .take()
+                        .expect("tried to start rejector twice"),
+                    packet,
+                )?;
             }
 
             select! {
@@ -669,13 +691,31 @@ async fn main() -> anyhow::Result<()> {
                 let _ = packet.send(&mut writer).await;
             }
 
-            // if let Some(number) = handler_metadata.number {
-            //
-            // }
-
             if let Some(port) = handler_metadata.port {
-                if let Some(port_state) = port_handler.lock().await.port_state.get_mut(&port) {
+                let mut port_handler = port_handler.lock().await;
+
+                if let Some(port_state) = port_handler.port_state.get_mut(&port) {
                     port_state.new_state(PortStatus::Disconnected);
+                }
+
+                if let Some(listener) = handler_metadata.listener.take() {
+                    let res = port_handler.start_rejector(
+                        port,
+                        listener,
+                        Packet {
+                            header: Header {
+                                kind: PacketKind::Reject.raw(),
+                                length: 3,
+                            },
+                            data: b"nc\0".to_vec(),
+                        },
+                    );
+
+                    if let Err(err) = res {
+                        println!(
+                            "failed to start rejector on port {port} after client error: {err}"
+                        );
+                    }
                 }
             }
 
