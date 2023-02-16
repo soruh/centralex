@@ -5,7 +5,7 @@ use std::{
     fmt::Debug,
     fs::File,
     io::{BufReader, BufWriter},
-    net::{IpAddr, SocketAddr, ToSocketAddrs},
+    net::{SocketAddr, ToSocketAddrs},
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
@@ -421,7 +421,7 @@ async fn connection_handler(
 
         let mut port_handler = port_handler.lock().await;
 
-        let listener = if let Some((listener, _package)) = port_handler.stop_rejector(port).await {
+        let listener = if let Some((listener, _packet)) = port_handler.stop_rejector(port).await {
             Ok(listener)
         } else {
             TcpListener::bind((config.listen_addr.ip(), port)).await
