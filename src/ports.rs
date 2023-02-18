@@ -4,7 +4,7 @@ use std::{
     fmt::{Debug, Display},
     fs::File,
     io::{BufReader, BufWriter},
-    ops::Range,
+    ops::RangeInclusive,
     path::Path,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -177,7 +177,7 @@ impl Default for PortStatus {
 }
 
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
-pub struct AllowedPorts(Vec<Range<u16>>);
+pub struct AllowedPorts(Vec<RangeInclusive<u16>>);
 
 impl AllowedPorts {
     pub fn is_allowed(&self, port: Port) -> bool {
