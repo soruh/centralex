@@ -124,7 +124,7 @@ impl Debug for PortHandler {
         f.debug_struct("PortHandler")
             .field("last_update", &DisplayAsDebug(last_update))
             .field("port_guards", &self.port_guards)
-            .field("allowed_ports", &self.allowed_ports.00)
+            .field("allowed_ports", &self.allowed_ports.0)
             .field("free_ports", &free_ports)
             .field("errored_ports", &errored_ports)
             .field("allocated_ports", &self.allocated_ports)
