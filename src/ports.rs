@@ -236,6 +236,9 @@ impl PortHandler {
         self.allocated_ports
             .retain(|_, port| self.allowed_ports.is_allowed(*port)); // remove allocated ports that are no longer allowed
 
+        self.port_state
+            .retain(|port, _| self.allowed_ports.is_allowed(*port)); // remove port states that are no longer allowed
+
         self.free_ports.retain(|port| {
             let is_allocted = self
                 .allocated_ports
