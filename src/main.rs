@@ -49,6 +49,27 @@ pub struct Config {
     listen_addr: SocketAddr,
     #[serde(deserialize_with = "parse_socket_addr")]
     dyn_ip_server: SocketAddr,
+    #[cfg(feature = "debug_server")]
+    #[serde(deserialize_with = "maybe_parse_socket_addr")]
+    #[serde(default)]
+    debug_server_addr: Option<SocketAddr>,
+}
+
+fn maybe_parse_socket_addr<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<SocketAddr>, D::Error> {
+    use serde::de::Error;
+
+    Option::<String>::deserialize(deserializer)?
+        .map(|s| {
+            Ok::<_, D::Error>(
+                s.to_socket_addrs()
+                    .map_err(|err| D::Error::custom(err))?
+                    .next()
+                    .ok_or_else(|| D::Error::invalid_length(0, &"one or more"))?,
+            )
+        })
+        .transpose()
 }
 
 fn parse_socket_addr<'de, D: Deserializer<'de>>(deserializer: D) -> Result<SocketAddr, D::Error> {
@@ -109,9 +130,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     #[cfg(feature = "debug_server")]
-    tokio::spawn(debug_server());
+    if let Some(debug_server_addr) = config.debug_server_addr {
+        println!("starting debug server on {debug_server_addr:?}");
+        tokio::spawn(debug_server(debug_server_addr, port_handler.clone()));
+    }
 
     let listener = TcpListener::bind(config.listen_addr).await?;
+    println!("listening on {}", config.listen_addr);
 
     while let Ok((mut stream, addr)) = listener.accept().await {
         println!("connection from {addr}");
@@ -127,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
                     .await;
 
             if let Err(err) = res {
-                println!("client at {addr} had an error: {err}");
+                println!("client at {addr} had an error: {err:?}");
 
                 let mut packet = Packet::default();
 
@@ -148,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
 
                 if let Some(port_state) = port_handler.port_state.get_mut(&port) {
                     port_state.new_state(PortStatus::Disconnected);
+                    port_handler.register_update();
                 }
 
                 if let Some(listener) = handler_metadata.listener.take() {
@@ -256,6 +282,7 @@ async fn connection_handler(
                         .context("dy-ip update")?;
                 }
 
+                port_handler.register_update();
                 port_handler
                     .port_state
                     .entry(port)

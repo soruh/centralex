@@ -11,7 +11,10 @@ anyhow = { version = "1.0.68", features = ["backtrace"] }
 bytemuck = { version = "1.13.0", features = ["derive"] }
 serde = { version = "1.0.152", features = ["derive"] }
 serde_json = "1.0.91"
+hyper = { version = "0.14.24", optional = true, features = ["full"] } # TODO: reduce
+chrono = { version = "0.4.23", optional = true } # TODO: reduce
 
 [features]
-default = ["debug_server"]
-debug_server = []
+default = ["debug_server", "chrono"]
+chrono = ["dep:chrono"]
+debug_server = ["dep:hyper"]

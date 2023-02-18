@@ -1,6 +1,7 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeSet, HashMap, HashSet},
-    fmt::Debug,
+    fmt::{Debug, Display},
     fs::File,
     io::{BufReader, BufWriter},
     ops::Range,
@@ -17,7 +18,7 @@ use crate::{
     packets::Packet, Config, Number, Port, UnixTimestamp, PORT_OWNERSHIP_TIMEOUT, PORT_RETRY_TIME,
 };
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct PortHandler {
     #[serde(skip)]
     pub last_update: Option<Instant>,
@@ -27,18 +28,128 @@ pub struct PortHandler {
 
     allowed_ports: AllowedPorts,
 
+    #[serde(skip)]
     free_ports: HashSet<Port>,
     errored_ports: BTreeSet<(UnixTimestamp, Port)>,
     allocated_ports: HashMap<Number, Port>,
 
-    #[serde(skip)]
     pub port_state: HashMap<Port, PortState>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Hash, PartialEq, Eq)]
+struct DisplayAsDebug<T: Display>(T);
+impl<T: Display> Debug for DisplayAsDebug<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+fn duration_in_hours(duration: Duration) -> String {
+    let seconds_elapsed = duration.as_secs();
+
+    let hours = seconds_elapsed / (60 * 60);
+    let minutes = (seconds_elapsed / 60) % 60;
+    let seconds = seconds_elapsed % 60;
+
+    match (hours > 0, minutes > 0) {
+        (true, _) => format!("{hours}h {minutes}min {seconds}s"),
+        (false, true) => format!("{minutes}min {seconds}s"),
+        _ => format!("{:.0?}", duration),
+    }
+}
+
+fn format_instant(instant: Instant) -> String {
+    let when = duration_in_hours(instant.elapsed()) + " ago";
+
+    #[cfg(feature = "chrono")]
+    let when = (|| -> anyhow::Result<_> {
+        use chrono::{Local, TimeZone};
+
+        let date = Local
+            .timestamp_opt(
+                (SystemTime::now().duration_since(UNIX_EPOCH)? - instant.elapsed())
+                    .as_secs()
+                    .try_into()?,
+                0,
+            )
+            .latest()
+            .ok_or(anyhow!("invalid update timestamp"))?
+            .format("%Y-%m-%d %H:%M:%S");
+
+        Ok(format!("{date} ({when})"))
+    })()
+    .unwrap_or(when);
+
+    when
+}
+
+fn instant_from_timestamp(timestamp: UnixTimestamp) -> Instant {
+    Instant::now() - UNIX_EPOCH.elapsed().unwrap() + Duration::from_secs(timestamp)
+}
+
+impl Debug for PortHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const SHOW_N_FREE_PORTS: usize = 20;
+
+        let last_update = self
+            .last_update
+            .map(|last_update| Cow::from(format_instant(last_update)))
+            .unwrap_or(Cow::from("?"));
+
+        let mut free_ports = self
+            .free_ports
+            .iter()
+            .take(SHOW_N_FREE_PORTS)
+            .map(|x| DisplayAsDebug(x.to_string()))
+            .collect::<Vec<_>>();
+
+        if let Some(n_not_shown) = self.free_ports.len().checked_sub(SHOW_N_FREE_PORTS) {
+            if n_not_shown > 0 {
+                free_ports.push(DisplayAsDebug(format!("[{n_not_shown} more]")));
+            }
+        }
+
+        let errored_ports = self
+            .errored_ports
+            .iter()
+            .rev()
+            .map(|&(since, port)| {
+                DisplayAsDebug(format!(
+                    "{port:5}: {}",
+                    format_instant(instant_from_timestamp(since))
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        f.debug_struct("PortHandler")
+            .field("last_update", &DisplayAsDebug(last_update))
+            .field("port_guards", &self.port_guards)
+            .field("allowed_ports", &self.allowed_ports)
+            .field("free_ports", &free_ports)
+            .field("errored_ports", &errored_ports)
+            .field("allocated_ports", &self.allocated_ports)
+            .field("port_state", &self.port_state)
+            .finish()
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
 pub struct PortState {
     last_change: UnixTimestamp,
+    #[serde(skip)]
     status: PortStatus,
+}
+
+impl Debug for PortState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PortState")
+            .field(
+                "last_change",
+                &DisplayAsDebug(format_instant(instant_from_timestamp(self.last_change))),
+            )
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 impl PortState {
@@ -52,7 +163,7 @@ impl PortState {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 pub enum PortStatus {
     Disconnected,
     Idle,
@@ -78,13 +189,21 @@ impl AllowedPorts {
 }
 
 impl PortHandler {
+    pub fn status_string(&self) -> String {
+        format!("{self:#?}")
+    }
+
     pub fn register_update(&mut self) {
         self.last_update = Some(Instant::now());
     }
 
     pub fn store(&self, cache: &Path) -> anyhow::Result<()> {
         println!("storing database");
-        serde_json::to_writer(BufWriter::new(File::create(cache)?), self)?;
+        let temp_file = cache.with_extension(".temp");
+
+        serde_json::to_writer(BufWriter::new(File::create(&temp_file)?), self)?;
+        std::fs::rename(temp_file, cache)?;
+
         Ok(())
     }
 
@@ -105,28 +224,32 @@ impl PortHandler {
 
         self.allowed_ports = allowed_ports.clone();
 
-        self.free_ports.clear();
+        self.free_ports.clear(); // remove all ports
         self.free_ports
-            .extend(self.allowed_ports.0.iter().cloned().flatten());
+            .extend(self.allowed_ports.0.iter().cloned().flatten()); // add allowed ports
 
         self.free_ports.shrink_to_fit(); // we are at the maximum number of ports we'll ever reach
 
         self.errored_ports
-            .retain(|(_, port)| self.allowed_ports.is_allowed(*port));
+            .retain(|(_, port)| self.allowed_ports.is_allowed(*port)); // remove errored ports that are no longer allowed
 
         self.allocated_ports
-            .retain(|_, port| self.allowed_ports.is_allowed(*port));
+            .retain(|_, port| self.allowed_ports.is_allowed(*port)); // remove allocated ports that are no longer allowed
 
         self.free_ports.retain(|port| {
-            self.allocated_ports
+            let is_allocted = self
+                .allocated_ports
                 .iter()
                 .find(|(_, allocated_port)| *allocated_port == port)
-                .is_none()
-                && self
-                    .errored_ports
-                    .iter()
-                    .find(|(_, errored_port)| errored_port == port)
-                    .is_none()
+                .is_some();
+
+            let is_errored = self
+                .errored_ports
+                .iter()
+                .find(|(_, errored_port)| errored_port == port)
+                .is_some();
+
+            !(is_allocted || is_errored)
         });
     }
 
@@ -177,7 +300,9 @@ struct Rejector {
 
 impl Debug for Rejector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PortGuard").finish()
+        f.debug_struct("PortGuard")
+            .field("message", &self.state.1)
+            .finish()
     }
 }
 
@@ -302,6 +427,7 @@ impl PortHandler {
     }
 
     pub fn mark_port_error(&mut self, number: Number, port: Port) {
+        println!("registering an error on port {port} for number {number}");
         self.register_update();
 
         self.errored_ports.insert((
@@ -314,5 +440,6 @@ impl PortHandler {
 
         self.allocated_ports.remove(&number);
         self.free_ports.remove(&port);
+        self.port_state.remove(&port);
     }
 }
