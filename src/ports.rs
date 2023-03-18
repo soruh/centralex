@@ -93,9 +93,12 @@ impl Debug for PortHandler {
             .map(|last_update| Cow::from(format_instant(last_update)))
             .unwrap_or(Cow::from("?"));
 
-        let mut free_ports = self
-            .free_ports
-            .iter()
+        let mut free_ports = self.free_ports.iter().copied().collect::<Vec<u16>>();
+
+        free_ports.sort();
+
+        let mut free_ports = free_ports
+            .into_iter()
             .take(SHOW_N_FREE_PORTS)
             .map(|x| DisplayAsDebug(x.to_string()))
             .collect::<Vec<_>>();
