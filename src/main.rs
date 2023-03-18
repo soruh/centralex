@@ -1,5 +1,3 @@
-// #![allow(unused)]
-
 use std::{
     fmt::Debug,
     fs::File,
@@ -93,6 +91,13 @@ impl Config {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // make whole programm exit on worker thread crash
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_panic(info);
+        std::process::exit(1);
+    }));
+
     let config = Arc::new(Config::load("config.json")?);
 
     if config.allowed_ports.is_empty() {
