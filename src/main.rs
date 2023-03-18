@@ -176,7 +176,10 @@ fn main() -> anyhow::Result<()> {
                                 *TIME_ZONE_OFFSET.get().unwrap(),
                                 TIME_FORMAT.get().unwrap(),
                             ))
-                            .with_filter(filter::LevelFilter::from_level(config.log_level)),
+                            .with_filter(filter::LevelFilter::from_level(config.log_level))
+                            .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
+                                meta.target().starts_with("centralex")
+                            })),
                     )
                     .init();
             }
