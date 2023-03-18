@@ -86,7 +86,7 @@ fn instant_from_timestamp(timestamp: UnixTimestamp) -> Instant {
 
 impl Debug for PortHandler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const SHOW_N_FREE_PORTS: usize = 20;
+        const SHOW_N_FREE_PORTS: usize = 15;
 
         let last_update = self
             .last_update
@@ -118,14 +118,41 @@ impl Debug for PortHandler {
             })
             .collect::<Vec<_>>();
 
+        let mut allocated_ports = self
+            .allocated_ports
+            .iter()
+            .map(|(&number, &port)| {
+                let state = &self.port_state[&port];
+
+                #[derive(Debug)]
+                #[allow(dead_code)]
+                struct State {
+                    state: PortStatus,
+                    number: u32,
+                    port: u16,
+                    last_change: DisplayAsDebug<String>,
+                }
+
+                State {
+                    state: state.status,
+                    number,
+                    port,
+                    last_change: DisplayAsDebug(format_instant(instant_from_timestamp(
+                        state.last_change,
+                    ))),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        allocated_ports.sort_by(|a, b| a.state.cmp(&b.state).then(a.number.cmp(&b.number)));
+
         f.debug_struct("PortHandler")
             .field("last_update", &DisplayAsDebug(last_update))
             .field("port_guards", &self.port_guards)
             .field("allowed_ports", &self.allowed_ports.0)
             .field("free_ports", &free_ports)
             .field("errored_ports", &errored_ports)
-            .field("allocated_ports", &self.allocated_ports)
-            .field("port_state", &self.port_state)
+            .field("allocated_ports", &allocated_ports)
             .finish()
     }
 }
@@ -160,11 +187,11 @@ impl PortState {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, PartialOrd, Ord)]
 pub enum PortStatus {
-    Disconnected,
-    Idle,
     InCall,
+    Idle,
+    Disconnected,
 }
 
 impl Default for PortStatus {
@@ -187,7 +214,7 @@ impl AllowedPorts {
 
 impl PortHandler {
     pub fn status_string(&self) -> String {
-        format!("{self:#?}")
+        format!("{self:#?}\n")
     }
 
     pub fn register_update(&mut self) {
