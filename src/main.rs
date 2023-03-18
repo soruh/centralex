@@ -162,7 +162,8 @@ async fn main() -> anyhow::Result<()> {
                 Err(err) => {
                     let err = err
                         .downcast::<String>()
-                        .unwrap_or_else(|_| Box::new("?".to_owned()));
+                        .map(|err| *err)
+                        .unwrap_or_else(|_| "?".to_owned());
 
                     Some(format!("panic at: {err}"))
                 }
