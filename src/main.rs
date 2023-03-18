@@ -176,7 +176,7 @@ fn main() -> anyhow::Result<()> {
                 registry
                     .with(
                         fmt::layer()
-                            .with_target(false)
+                            .with_target(true)
                             .with_timer(fmt::time::OffsetTime::new(
                                 *TIME_ZONE_OFFSET.get().unwrap(),
                                 TIME_FORMAT.get().unwrap(),
