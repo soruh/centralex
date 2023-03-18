@@ -23,6 +23,8 @@ pub async fn connection_handler(
     port_handler: &Mutex<PortHandler>,
     stream: &mut TcpStream,
 ) -> anyhow::Result<()> {
+    let addr = stream.peer_addr()?;
+
     let (mut reader, mut writer) = stream.split();
 
     let mut packet = Packet::default();
@@ -47,8 +49,6 @@ pub async fn connection_handler(
             .lock()
             .await
             .allocate_port_for_number(config, number);
-
-        info!(port, "allocated port");
 
         let Some(port) = port else {
             writer.write_all(REJECT_OOP).await?;
@@ -104,6 +104,8 @@ pub async fn connection_handler(
             }
         };
     };
+
+    info!(number, port, %addr, "authenticated");
 
     let listener = handler_metadata.listener.as_mut().unwrap(); // we only break from the loop if this is set
 
