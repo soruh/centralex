@@ -352,7 +352,7 @@ struct Rejector {
 
 impl Debug for Rejector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PortGuard")
+        f.debug_struct("Rejector")
             .field("message", &self.state.1)
             .finish()
     }

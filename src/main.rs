@@ -210,7 +210,7 @@ fn main() -> anyhow::Result<()> {
 
                         let time_since_last_store = last_store.elapsed();
 
-                        if time_since_last_store > CACHE_STORE_INTERVAL {
+                        if time_since_last_store >= CACHE_STORE_INTERVAL {
                             let port_handler = port_handler.lock().await;
 
                             last_store = Instant::now();

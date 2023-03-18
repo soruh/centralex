@@ -105,7 +105,7 @@ pub async fn connection_handler(
         };
     };
 
-    info!(number, port, %addr, "authenticated");
+    info!(%addr, number, port, "authenticated");
 
     let listener = handler_metadata.listener.as_mut().unwrap(); // we only break from the loop if this is set
 
