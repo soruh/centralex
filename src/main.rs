@@ -174,7 +174,7 @@ fn main() -> anyhow::Result<()> {
                 let registry = registry.with(
                     console_subscriber::ConsoleLayer::builder()
                         .retention(Duration::from_secs(60))
-                        .init(),
+                        .spawn(),
                 );
 
                 registry
