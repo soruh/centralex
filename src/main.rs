@@ -171,11 +171,7 @@ fn main() -> anyhow::Result<()> {
                 let registry = tracing_subscriber::registry();
 
                 #[cfg(feature = "tokio_console")]
-                let registry = registry.with(
-                    console_subscriber::ConsoleLayer::builder()
-                        .retention(Duration::from_secs(60))
-                        .spawn(),
-                );
+                let registry = registry.with(console_subscriber::spawn());
 
                 registry
                     .with(
