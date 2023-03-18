@@ -198,7 +198,7 @@ impl PortHandler {
     }
 
     pub fn store(&self, cache: &Path) -> anyhow::Result<()> {
-        println!("storing database");
+        println!("storing cache");
         let temp_file = cache.with_extension(".temp");
 
         serde_json::to_writer(BufWriter::new(File::create(&temp_file)?), self)?;
@@ -208,7 +208,7 @@ impl PortHandler {
     }
 
     pub fn load(cache: &Path) -> std::io::Result<Self> {
-        println!("loading database");
+        println!("loading cache");
         Ok(serde_json::from_reader(BufReader::new(File::open(cache)?))?)
     }
 

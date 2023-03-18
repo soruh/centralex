@@ -91,13 +91,6 @@ impl Config {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // make whole programm exit on worker thread crash
-    let default_panic = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        default_panic(info);
-        std::process::exit(1);
-    }));
-
     let config = Arc::new(Config::load("config.json")?);
 
     if config.allowed_ports.is_empty() {
@@ -127,7 +120,9 @@ async fn main() -> anyhow::Result<()> {
 
                     if should_store {
                         last_store = Some(last_update);
-                        port_handler.store(&cache_path).unwrap();
+                        if let Err(err) = port_handler.store(&cache_path) {
+                            println!("failed to store cache: {err:?}");
+                        }
                     }
                 }
             }
@@ -152,17 +147,36 @@ async fn main() -> anyhow::Result<()> {
         let mut handler_metadata = HandlerMetadata::default();
 
         tokio::spawn(async move {
-            let res =
-                connection_handler(&config, &mut handler_metadata, &port_handler, &mut stream)
-                    .await;
+            use futures::future::FutureExt;
 
-            if let Err(err) = res {
-                println!("client at {addr} had an error: {err:?}");
+            let res = std::panic::AssertUnwindSafe(connection_handler(
+                &config,
+                &mut handler_metadata,
+                &port_handler,
+                &mut stream,
+            ))
+            .catch_unwind()
+            .await;
+
+            let error = match res {
+                Err(err) => {
+                    let err = err
+                        .downcast::<String>()
+                        .unwrap_or_else(|_| Box::new("?".to_owned()));
+
+                    Some(format!("panic at: {err}"))
+                }
+                Ok(Err(err)) => Some(err.to_string()),
+                Ok(Ok(())) => None,
+            };
+
+            if let Some(err) = error {
+                println!("client at {addr} had an error: {err}");
 
                 let mut packet = Packet::default();
 
-                packet.data.extend_from_slice(err.to_string().as_bytes());
-                packet.data.truncate(0xfe);
+                packet.data.extend_from_slice(err.as_bytes());
+                packet.data.truncate((u8::MAX - 1) as usize);
                 packet.data.push(0);
                 packet.header = Header {
                     kind: PacketKind::Error.raw(),
