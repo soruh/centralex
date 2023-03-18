@@ -148,7 +148,8 @@ impl Debug for PortHandler {
             a.state.cmp(&b.state).then(
                 self.port_state[&a.port]
                     .last_change
-                    .cmp(&self.port_state[&b.port].last_change),
+                    .cmp(&self.port_state[&b.port].last_change)
+                    .reverse(),
             )
         });
 
