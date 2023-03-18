@@ -20,6 +20,6 @@ time = { version = "0.3.20", features = ["local-offset", "macros"] }
 once_cell = "1.17.1"
 
 [features]
-default = ["debug_server"]
+default = ["debug_server", "tokio_console"]
 debug_server = ["dep:hyper"]
 tokio_console = ["dep:console-subscriber"]
