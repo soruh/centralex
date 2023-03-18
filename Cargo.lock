@@ -184,6 +184,7 @@ dependencies = [
  "console-subscriber",
  "futures",
  "hyper",
+ "once_cell",
  "serde",
  "serde_json",
  "time",

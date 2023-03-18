@@ -17,7 +17,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     packets::Packet, spawn, Config, Number, Port, UnixTimestamp, PORT_OWNERSHIP_TIMEOUT,
-    PORT_RETRY_TIME,
+    PORT_RETRY_TIME, TIME_FORMAT, TIME_ZONE_OFFSET,
 };
 
 #[derive(Default, Serialize, Deserialize)]
@@ -66,22 +66,11 @@ fn duration_in_hours(duration: Duration) -> String {
 fn format_instant(instant: Instant) -> String {
     let when = duration_in_hours(instant.elapsed()) + " ago";
 
-    todo!();
-
-    #[cfg(feature = "chrono")]
     let when = (|| -> anyhow::Result<_> {
-        use chrono::{Local, TimeZone};
-
-        let date = Local
-            .timestamp_opt(
-                (SystemTime::now().duration_since(UNIX_EPOCH)? - instant.elapsed())
-                    .as_secs()
-                    .try_into()?,
-                0,
-            )
-            .latest()
-            .ok_or(anyhow!("invalid update timestamp"))?
-            .format("%Y-%m-%d %H:%M:%S");
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)? - instant.elapsed();
+        let date = time::OffsetDateTime::from_unix_timestamp(timestamp.as_secs() as i64)?
+            .to_offset(*TIME_ZONE_OFFSET.get().unwrap())
+            .format(TIME_FORMAT.get().unwrap())?;
 
         Ok(format!("{date} ({when})"))
     })()

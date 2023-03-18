@@ -138,6 +138,11 @@ fn spawn<T: Send + 'static>(
         .unwrap_or_else(|err| panic!("failed to spawn {name:?}: {err:?}"))
 }
 
+static TIME_ZONE_OFFSET: once_cell::sync::OnceCell<time::UtcOffset> =
+    once_cell::sync::OnceCell::new();
+
+static TIME_FORMAT: once_cell::sync::OnceCell<OwnedFormatItem> = once_cell::sync::OnceCell::new();
+
 fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::load("config.json")?);
 
@@ -145,7 +150,13 @@ fn main() -> anyhow::Result<()> {
         panic!("no allowed ports");
     }
 
-    let local_offset = time::UtcOffset::local_offset_at(time::OffsetDateTime::UNIX_EPOCH)?;
+    TIME_FORMAT.set(config.time_format.clone()).unwrap();
+
+    TIME_ZONE_OFFSET
+        .set(time::UtcOffset::local_offset_at(
+            time::OffsetDateTime::UNIX_EPOCH,
+        )?)
+        .unwrap();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -167,8 +178,8 @@ fn main() -> anyhow::Result<()> {
                         fmt::layer()
                             .with_target(false)
                             .with_timer(fmt::time::OffsetTime::new(
-                                local_offset,
-                                config.time_format.clone(),
+                                *TIME_ZONE_OFFSET.get().unwrap(),
+                                TIME_FORMAT.get().unwrap(),
                             ))
                             .with_filter(filter::LevelFilter::from_level(config.log_level)),
                     )
