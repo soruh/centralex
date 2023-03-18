@@ -86,7 +86,7 @@ fn instant_from_timestamp(timestamp: UnixTimestamp) -> Instant {
 
 impl Debug for PortHandler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const SHOW_N_FREE_PORTS: usize = 15;
+        const SHOW_N_FREE_PORTS: usize = 10;
 
         let last_update = self
             .last_update
