@@ -144,7 +144,13 @@ impl Debug for PortHandler {
             })
             .collect::<Vec<_>>();
 
-        allocated_ports.sort_by(|a, b| a.state.cmp(&b.state).then(a.number.cmp(&b.number)));
+        allocated_ports.sort_by(|a, b| {
+            a.state.cmp(&b.state).then(
+                self.port_state[&a.port]
+                    .last_change
+                    .cmp(&self.port_state[&b.port].last_change),
+            )
+        });
 
         f.debug_struct("PortHandler")
             .field("last_update", &DisplayAsDebug(last_update))
