@@ -153,14 +153,15 @@ impl Debug for PortHandler {
             )
         });
 
-        f.debug_struct("PortHandler")
-            .field("last_update", &DisplayAsDebug(last_update))
-            .field("port_guards", &self.port_guards)
-            .field("allowed_ports", &self.allowed_ports.0)
-            .field("free_ports", &free_ports)
-            .field("errored_ports", &errored_ports)
-            .field("allocated_ports", &allocated_ports)
-            .finish()
+        writeln!(f, "last update: {last_update}")?;
+        writeln!(f, "rejectors: {:#?}", self.port_guards)?;
+        writeln!(f, "allowed ports: {:?}", self.allowed_ports.0)?;
+        writeln!(f, "free ports: {:?}", free_ports)?;
+
+        writeln!(f, "errored ports: {:#?}", errored_ports)?;
+        writeln!(f, "allocated ports: {:#?}", allocated_ports)?;
+
+        Ok(())
     }
 }
 
