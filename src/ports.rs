@@ -13,6 +13,7 @@ use std::{
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle, time::Instant};
+use tracing::{error, info, warn};
 
 use crate::{
     packets::Packet, spawn, Config, Number, Port, UnixTimestamp, PORT_OWNERSHIP_TIMEOUT,
@@ -64,6 +65,8 @@ fn duration_in_hours(duration: Duration) -> String {
 
 fn format_instant(instant: Instant) -> String {
     let when = duration_in_hours(instant.elapsed()) + " ago";
+
+    todo!();
 
     #[cfg(feature = "chrono")]
     let when = (|| -> anyhow::Result<_> {
@@ -208,7 +211,7 @@ impl PortHandler {
     }
 
     pub fn store(&self, cache: &Path) -> anyhow::Result<()> {
-        println!("storing cache");
+        info!("storing cache");
         let temp_file = cache.with_extension(".temp");
 
         serde_json::to_writer(BufWriter::new(File::create(&temp_file)?), self)?;
@@ -221,18 +224,18 @@ impl PortHandler {
         cache: &Path,
         change_sender: tokio::sync::watch::Sender<Instant>,
     ) -> std::io::Result<Self> {
-        println!("loading cache");
+        info!("loading cache");
         let mut cache: Self = serde_json::from_reader(BufReader::new(File::open(cache)?))?;
         cache.change_sender = Some(change_sender);
         Ok(cache)
     }
 
     pub fn load_or_default(
-        cache: &Path,
+        path: &Path,
         change_sender: tokio::sync::watch::Sender<Instant>,
     ) -> Self {
-        Self::load(cache, change_sender).unwrap_or_else(|err| {
-            println!("failed to parse cache file at {cache:?} using empty cache. error: {err}");
+        Self::load(path, change_sender).unwrap_or_else(|error| {
+            error!(?path, %error, "failed to parse cache file");
             Self::default()
         })
     }
@@ -280,7 +283,7 @@ impl PortHandler {
         listener: TcpListener,
         packet: Packet,
     ) -> anyhow::Result<()> {
-        println!("starting rejector: for port {port} with {packet:?}");
+        info!(port, ?packet, "starting rejector");
 
         let port_guard = Rejector::start(listener, packet);
 
@@ -293,7 +296,7 @@ impl PortHandler {
     }
 
     pub async fn stop_rejector(&mut self, port: Port) -> Option<(TcpListener, Packet)> {
-        println!("stopping rejector: for port {port}");
+        info!(port, "stopping rejector");
 
         Some(self.port_guards.remove(&port)?.stop().await)
     }
@@ -394,10 +397,10 @@ impl PortHandler {
                 if recovered_port.is_none()
                     && now.saturating_sub(Duration::from_secs(timestamp)) >= PORT_RETRY_TIME
                 {
-                    println!(
-                        " trying port: {port} at -{:?}",
-                        Duration::from_secs(now.as_secs())
-                            .saturating_sub(Duration::from_secs(timestamp))
+                    info!(
+                        port,
+                        last_try = ?Duration::from_secs(now.as_secs()).saturating_sub(Duration::from_secs(timestamp)),
+                        "retrying errored port",
                     );
 
                     match std::net::TcpListener::bind((config.listen_addr.ip(), port)) {
@@ -408,10 +411,10 @@ impl PortHandler {
                         Err(_) => timestamp = now.as_secs(),
                     }
                 } else {
-                    println!(
-                        "skipped port: {port} at -{:?}",
-                        Duration::from_secs(now.as_secs())
-                            .saturating_sub(Duration::from_secs(timestamp))
+                    info!(
+                        port,
+                        last_try = ?Duration::from_secs(now.as_secs()).saturating_sub(Duration::from_secs(timestamp)),
+                        "skipped retrying errored port",
                     );
                 }
 
@@ -421,7 +424,7 @@ impl PortHandler {
 
         if let Some((_, port)) = recovered_port {
             self.register_update();
-            println!("recovered_port: {port}");
+            info!(port, "recovered port");
             return Some(port);
         }
 
@@ -440,7 +443,7 @@ impl PortHandler {
 
         if let Some((&old_number, &port)) = removable_entry {
             self.register_update();
-            println!("reused port {port} which used to be allocated to {old_number} which wasn't connected in a long time");
+            info!(port, old_number, "reused port");
             assert!(self.allocated_ports.remove(&old_number).is_some());
             return Some(port);
         }
@@ -449,7 +452,7 @@ impl PortHandler {
     }
 
     pub fn mark_port_error(&mut self, number: Number, port: Port) {
-        println!("registering an error on port {port} for number {number}");
+        warn!(port, number, "registering an error on");
         self.register_update();
 
         self.errored_ports.insert((

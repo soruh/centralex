@@ -6,6 +6,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::tcp::{ReadHalf, WriteHalf},
 };
+use tracing::info;
 
 pub const REJECT_OOP: &[u8; 6] = b"\x04\x04oop\x00";
 pub const REJECT_TIMEOUT: &[u8; 10] = b"\x04\x08timeout\x00";
@@ -183,7 +184,7 @@ pub async fn dyn_ip_update(
     pin: u16,
     port: u16,
 ) -> anyhow::Result<std::net::Ipv4Addr> {
-    println!("starting dyn ip update for number={number} port={port}...");
+    info!(%number, %port, "starting dyn ip update");
 
     let mut packet = Packet::default();
     packet.header = Header {
@@ -205,7 +206,7 @@ pub async fn dyn_ip_update(
 
     packet.recv_into(&mut reader).await?;
 
-    let res = match packet.kind() {
+    let result = match packet.kind() {
         PacketKind::DynIpUpdateResponse => Ok(<[u8; 4]>::try_from(packet.data)
             .map_err(|err| {
                 anyhow::anyhow!(
@@ -234,7 +235,7 @@ pub async fn dyn_ip_update(
         _ => bail!("server returned unexpected packet"),
     };
 
-    println!("finished dyn ip update result: {res:?}");
+    info!(?result, "finished dyn ip update");
 
-    res
+    result
 }

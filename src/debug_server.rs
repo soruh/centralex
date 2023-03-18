@@ -6,6 +6,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::error;
 
 use crate::ports::PortHandler;
 use crate::spawn;
@@ -36,7 +37,7 @@ pub async fn debug_server(addr: SocketAddr, port_handler: Arc<Mutex<PortHandler>
         }));
 
     // Run this server for... forever!
-    if let Err(e) = server.await {
-        eprintln!("server error: {}", e);
+    if let Err(error) = server.await {
+        error!(%error, "debug server error");
     }
 }
