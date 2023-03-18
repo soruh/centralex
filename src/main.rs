@@ -141,7 +141,6 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(change_timeout) = change_timeout.take() {
                     tokio::time::timeout(change_timeout, change_receiver.changed())
                         .await
-                        .ok()
                         .unwrap_or(Ok(()))
                 } else {
                     change_receiver.changed().await
