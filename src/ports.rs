@@ -15,13 +15,17 @@ use serde::{Deserialize, Serialize};
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle, time::Instant};
 
 use crate::{
-    packets::Packet, Config, Number, Port, UnixTimestamp, PORT_OWNERSHIP_TIMEOUT, PORT_RETRY_TIME,
+    packets::Packet, spawn, Config, Number, Port, UnixTimestamp, PORT_OWNERSHIP_TIMEOUT,
+    PORT_RETRY_TIME,
 };
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct PortHandler {
     #[serde(skip)]
     pub last_update: Option<Instant>,
+
+    #[serde(skip)]
+    pub change_sender: Option<tokio::sync::watch::Sender<Instant>>,
 
     #[serde(skip)]
     port_guards: HashMap<Port, Rejector>,
@@ -194,7 +198,13 @@ impl PortHandler {
     }
 
     pub fn register_update(&mut self) {
-        self.last_update = Some(Instant::now());
+        let now = Instant::now();
+        self.last_update = Some(now);
+        self.change_sender
+            .as_ref()
+            .expect("PortHandler is missing it's change_sender")
+            .send(now)
+            .expect("failed to notify cache writer");
     }
 
     pub fn store(&self, cache: &Path) -> anyhow::Result<()> {
@@ -207,13 +217,21 @@ impl PortHandler {
         Ok(())
     }
 
-    pub fn load(cache: &Path) -> std::io::Result<Self> {
+    pub fn load(
+        cache: &Path,
+        change_sender: tokio::sync::watch::Sender<Instant>,
+    ) -> std::io::Result<Self> {
         println!("loading cache");
-        Ok(serde_json::from_reader(BufReader::new(File::open(cache)?))?)
+        let mut cache: Self = serde_json::from_reader(BufReader::new(File::open(cache)?))?;
+        cache.change_sender = Some(change_sender);
+        Ok(cache)
     }
 
-    pub fn load_or_default(cache: &Path) -> Self {
-        Self::load(cache).unwrap_or_else(|err| {
+    pub fn load_or_default(
+        cache: &Path,
+        change_sender: tokio::sync::watch::Sender<Instant>,
+    ) -> Self {
+        Self::load(cache, change_sender).unwrap_or_else(|err| {
             println!("failed to parse cache file at {cache:?} using empty cache. error: {err}");
             Self::default()
         })
@@ -311,12 +329,13 @@ impl Debug for Rejector {
 
 impl Rejector {
     fn start(listener: TcpListener, packet: Packet) -> Self {
+        let port = listener.local_addr().map(|addr| addr.port()).unwrap_or(0);
         let state = Arc::new((Mutex::new(listener), packet));
 
         let handle = {
             let state = state.clone();
 
-            tokio::spawn(async move {
+            spawn(&format!("rejector for port {port}",), async move {
                 let (listener, packet) = state.as_ref();
 
                 let listener = listener.lock().await;
