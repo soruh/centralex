@@ -13,7 +13,7 @@ use std::{
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle, time::Instant};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     constants::{PORT_OWNERSHIP_TIMEOUT, PORT_RETRY_TIME},
@@ -239,7 +239,7 @@ impl PortHandler {
     }
 
     pub fn store(&self, cache: &Path) -> anyhow::Result<()> {
-        info!("storing cache");
+        debug!("storing cache");
         let temp_file = cache.with_extension(".temp");
 
         serde_json::to_writer(BufWriter::new(File::create(&temp_file)?), self)?;
@@ -392,26 +392,36 @@ impl Rejector {
 
 impl PortHandler {
     pub fn allocate_port_for_number(&mut self, config: &Config, number: Number) -> Option<Port> {
-        if let Some(port) = self.allocated_ports.get(&number) {
+        let port = if let Some(port) = self.allocated_ports.get(&number) {
             let already_connected = self
                 .port_state
                 .get(port)
                 .map(|state| state.status != PortStatus::Disconnected)
                 .unwrap_or(false);
 
-            return if already_connected { None } else { Some(*port) };
-        }
-
-        let port = if let Some(&port) = self.free_ports.iter().next() {
-            self.register_update();
-            self.free_ports.remove(&port);
-            port
+            if already_connected {
+                None
+            } else {
+                Some(*port)
+            }
         } else {
-            self.try_recover_port(config)?
+            let port = if let Some(&port) = self.free_ports.iter().next() {
+                self.register_update();
+                self.free_ports.remove(&port);
+                port
+            } else {
+                self.try_recover_port(config)?
+            };
+
+            assert!(self.allocated_ports.insert(number, port).is_none());
+            Some(port)
         };
 
-        assert!(self.allocated_ports.insert(number, port).is_none());
-        Some(port)
+        if let Some(port) = port {
+            info!(port, "allocated port");
+        }
+
+        port
     }
 
     fn try_recover_port(&mut self, config: &Config) -> Option<Port> {
