@@ -82,7 +82,7 @@ impl Debug for Packet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let data = &self.data;
 
-        let str_data = std::str::from_utf8(&data[..data.len() - 1]).ok();
+        let str_data = std::str::from_utf8(&data[..data.len().saturating_sub(1)]).ok();
 
         let data = if let Some(str_data) = str_data.as_ref() {
             str_data as &dyn Debug
