@@ -21,7 +21,7 @@ use tokio::{
     sync::Mutex,
     time::{sleep, timeout, Instant},
 };
-use tracing::{debug, error, info, warn, Level};
+use tracing::{error, info, trace, warn, Level};
 
 use crate::packets::{dyn_ip_update, PacketKind, REJECT_OOP, REJECT_TIMEOUT};
 use crate::ports::{AllowedPorts, PortHandler, PortStatus};
@@ -447,13 +447,13 @@ async fn connection_handler(
     let mut last_ping_received_at = Instant::now();
 
     let result = loop {
-        debug!(
+        trace!(
             seconds = SEND_PING_INTERVAL
                 .saturating_sub(last_ping_sent_at.elapsed())
                 .as_secs(),
             "next ping in"
         );
-        debug!(
+        trace!(
             seconds = PING_TIMEOUT
                 .saturating_sub(last_ping_received_at.elapsed())
                 .as_secs(),
@@ -472,14 +472,14 @@ async fn connection_handler(
                 packet.recv_into(&mut reader).await?;
 
                 if packet.kind() == PacketKind::Ping {
-                    debug!("received ping");
+                    trace!("received ping");
                     last_ping_received_at = Instant::now();
                 } else {
                     break Result::Packet { packet }
                 }
             },
             _ = sleep(send_next_ping_in) => {
-                debug!("sending ping");
+                trace!("sending ping");
                 writer.write_all(bytemuck::bytes_of(& Header { kind: PacketKind::Ping.raw(), length: 0 })).await?;
                 last_ping_sent_at = Instant::now();
             }
