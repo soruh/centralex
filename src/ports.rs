@@ -16,8 +16,9 @@ use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle, time::Instant};
 use tracing::{error, info, warn};
 
 use crate::{
-    packets::Packet, spawn, Config, Number, Port, UnixTimestamp, PORT_OWNERSHIP_TIMEOUT,
-    PORT_RETRY_TIME, TIME_FORMAT, TIME_ZONE_OFFSET,
+    constants::{PORT_OWNERSHIP_TIMEOUT, PORT_RETRY_TIME},
+    packets::Packet,
+    spawn, Config, Number, Port, UnixTimestamp, TIME_FORMAT, TIME_ZONE_OFFSET,
 };
 
 #[derive(Default, Serialize, Deserialize)]
@@ -421,14 +422,12 @@ impl PortHandler {
             self.port_state
                 .get(port)
                 .map(|port_state| {
-                    dbg!(port_state).status == PortStatus::Disconnected
-                        && dbg!(now.saturating_sub(Duration::from_secs(port_state.last_change)))
+                    port_state.status == PortStatus::Disconnected
+                        && now.saturating_sub(Duration::from_secs(port_state.last_change))
                             >= PORT_OWNERSHIP_TIMEOUT
                 })
                 .unwrap_or(true)
         });
-
-        dbg!(&removable_entry);
 
         if let Some((&old_number, &port)) = removable_entry {
             self.register_update();
