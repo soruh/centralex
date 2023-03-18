@@ -417,12 +417,19 @@ async fn connection_handler(
     };
 
     let (mut client, mut packet) = match result {
-        Result::Packet { packet } => {
+        Result::Packet { mut packet } => {
             if matches!(
                 packet.kind(),
                 packets::PacketKind::End | packets::PacketKind::Reject
             ) {
                 println!("got disconnect packet: {packet:?}");
+
+                if packet.kind() == packets::PacketKind::End {
+                    packet.header.kind = packets::PacketKind::Reject.raw();
+                    packet.data.clear();
+                    packet.data.extend_from_slice(b"nc\0");
+                    packet.header.length = packet.data.len() as u8;
+                }
 
                 port_handler.lock().await.start_rejector(
                     port,
