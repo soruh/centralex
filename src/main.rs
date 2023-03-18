@@ -93,7 +93,7 @@ impl Config {
 }
 
 #[cfg(not(feature = "tokio_console"))]
-
+#[track_caller]
 fn spawn<T: Send + 'static>(
     _name: &str,
     future: impl Future<Output = T> + Send + 'static,
@@ -102,6 +102,7 @@ fn spawn<T: Send + 'static>(
 }
 
 #[cfg(feature = "tokio_console")]
+#[track_caller]
 fn spawn<T: Send + 'static>(
     name: &str,
     future: impl Future<Output = T> + Send + 'static,
