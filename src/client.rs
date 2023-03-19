@@ -180,13 +180,11 @@ pub async fn connection_handler(
             if matches!(packet.kind(), PacketKind::End | PacketKind::Reject) {
                 info!(?packet, "got disconnect packet");
 
-                if packet.kind() == PacketKind::End {
-                    packet.header.kind = PacketKind::Reject.raw();
-                    packet.data.clear();
-                    if packet.data.is_empty() {
-                        packet.data.extend_from_slice(b"nc\0");
-                        packet.header.length = packet.data.len() as u8;
-                    }
+                packet.header.kind = PacketKind::Reject.raw();
+
+                if packet.data.is_empty() {
+                    packet.data.extend_from_slice(b"nc\0");
+                    packet.header.length = packet.data.len() as u8;
                 }
 
                 port_handler.lock().await.start_rejector(
