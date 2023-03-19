@@ -5,18 +5,23 @@ use std::{
     fs::File,
     io::{BufReader, BufWriter},
     ops::RangeInclusive,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
-use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle, time::Instant};
+use tokio::{
+    net::TcpListener,
+    sync::{watch::Receiver, Mutex},
+    task::JoinHandle,
+    time::Instant,
+};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    constants::{PORT_OWNERSHIP_TIMEOUT, PORT_RETRY_TIME},
+    constants::{CACHE_STORE_INTERVAL, PORT_OWNERSHIP_TIMEOUT, PORT_RETRY_TIME},
     packets::Packet,
     spawn, Config, Number, Port, UnixTimestamp, TIME_FORMAT, TIME_ZONE_OFFSET,
 };
@@ -32,7 +37,7 @@ pub struct PortHandler {
     #[serde(skip)]
     port_guards: HashMap<Port, Rejector>,
 
-    allowed_ports: AllowedPorts,
+    allowed_ports: AllowedList,
 
     #[serde(skip)]
     free_ports: HashSet<Port>,
@@ -40,6 +45,38 @@ pub struct PortHandler {
     allocated_ports: HashMap<Number, Port>,
 
     pub port_state: HashMap<Port, PortState>,
+}
+
+pub async fn cache_daemon(
+    port_handler: Arc<Mutex<PortHandler>>,
+    cache_path: PathBuf,
+    mut change_receiver: Receiver<Instant>,
+) {
+    let mut last_store = Instant::now() - 2 * CACHE_STORE_INTERVAL;
+    let mut change_timeout = None;
+    loop {
+        if let Some(change_timeout) = change_timeout.take() {
+            tokio::time::timeout(change_timeout, change_receiver.changed())
+                .await
+                .unwrap_or(Ok(()))
+        } else {
+            change_receiver.changed().await
+        }
+        .expect("failed to wait for cache changes");
+
+        let time_since_last_store = last_store.elapsed();
+
+        if time_since_last_store >= CACHE_STORE_INTERVAL {
+            let port_handler = port_handler.lock().await;
+
+            last_store = Instant::now();
+            if let Err(err) = port_handler.store(&cache_path) {
+                error!("failed to store cache: {err:?}");
+            }
+        } else {
+            change_timeout = Some(CACHE_STORE_INTERVAL - time_since_last_store);
+        }
+    }
 }
 
 #[derive(Hash, PartialEq, Eq)]
@@ -60,7 +97,7 @@ fn duration_in_hours(duration: Duration) -> String {
     match (hours > 0, minutes > 0) {
         (true, _) => format!("{hours}h {minutes}min {seconds}s"),
         (false, true) => format!("{minutes}min {seconds}s"),
-        _ => format!("{:.0?}", duration),
+        _ => format!("{duration:.0?}"),
     }
 }
 
@@ -69,9 +106,11 @@ fn format_instant(instant: Instant) -> String {
 
     (|| -> anyhow::Result<_> {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)? - instant.elapsed();
-        let date = time::OffsetDateTime::from_unix_timestamp(timestamp.as_secs() as i64)?
-            .to_offset(*TIME_ZONE_OFFSET.get().unwrap())
-            .format(TIME_FORMAT.get().unwrap())?;
+        let date = time::OffsetDateTime::from_unix_timestamp(
+            timestamp.as_secs().try_into().expect("timestamp overflow"),
+        )?
+        .to_offset(*TIME_ZONE_OFFSET.get().unwrap())
+        .format(TIME_FORMAT.get().unwrap())?;
 
         Ok(format!("{date} ({when})"))
     })()
@@ -93,7 +132,7 @@ impl Debug for PortHandler {
 
         let mut free_ports = self.free_ports.iter().copied().collect::<Vec<u16>>();
 
-        free_ports.sort();
+        free_ports.sort_unstable();
 
         let mut free_ports = free_ports
             .into_iter()
@@ -123,8 +162,6 @@ impl Debug for PortHandler {
             .allocated_ports
             .iter()
             .map(|(&number, &port)| {
-                let state = &self.port_state[&port];
-
                 #[derive(Debug)]
                 #[allow(dead_code)]
                 struct State {
@@ -133,6 +170,8 @@ impl Debug for PortHandler {
                     port: u16,
                     last_change: DisplayAsDebug<String>,
                 }
+
+                let state = &self.port_state[&port];
 
                 State {
                     state: state.status,
@@ -145,7 +184,7 @@ impl Debug for PortHandler {
             })
             .collect::<Vec<_>>();
 
-        allocated_ports.sort_by(|a, b| {
+        allocated_ports.sort_unstable_by(|a, b| {
             a.state.cmp(&b.state).then(
                 self.port_state[&a.port]
                     .last_change
@@ -157,10 +196,10 @@ impl Debug for PortHandler {
         writeln!(f, "last update: {last_update}")?;
         writeln!(f, "rejectors: {:#?}", self.port_guards)?;
         writeln!(f, "allowed ports: {:?}", self.allowed_ports.0)?;
-        writeln!(f, "free ports: {:?}", free_ports)?;
+        writeln!(f, "free ports: {free_ports:?}")?;
 
-        writeln!(f, "errored ports: {:#?}", errored_ports)?;
-        writeln!(f, "allocated ports: {:#?}", allocated_ports)?;
+        writeln!(f, "errored ports: {errored_ports:#?}")?;
+        writeln!(f, "allocated ports: {allocated_ports:#?}")?;
 
         Ok(())
     }
@@ -210,18 +249,21 @@ impl Default for PortStatus {
 }
 
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
-pub struct AllowedPorts(Vec<RangeInclusive<u16>>);
+pub struct AllowedList(Vec<RangeInclusive<u16>>);
 
-impl AllowedPorts {
+impl AllowedList {
+    #[must_use]
     pub fn is_allowed(&self, port: Port) -> bool {
         self.0.iter().any(|range| range.contains(&port))
     }
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 }
 
 impl PortHandler {
+    #[must_use]
     pub fn status_string(&self) -> String {
         format!("{self:#?}\n")
     }
@@ -256,6 +298,7 @@ impl PortHandler {
         Ok(cache)
     }
 
+    #[must_use]
     pub fn load_or_default(
         path: &Path,
         change_sender: tokio::sync::watch::Sender<Instant>,
@@ -266,7 +309,7 @@ impl PortHandler {
         })
     }
 
-    pub fn update_allowed_ports(&mut self, allowed_ports: &AllowedPorts) {
+    pub fn update_allowed_ports(&mut self, allowed_ports: &AllowedList) {
         self.register_update();
 
         self.allowed_ports = allowed_ports.clone();
@@ -392,8 +435,7 @@ impl PortHandler {
             let already_connected = self
                 .port_state
                 .get(port)
-                .map(|state| state.status != PortStatus::Disconnected)
-                .unwrap_or(false);
+                .map_or(false, |state| state.status != PortStatus::Disconnected);
 
             if already_connected {
                 None
@@ -463,14 +505,11 @@ impl PortHandler {
         }
 
         let removable_entry = self.allocated_ports.iter().find(|(_, port)| {
-            self.port_state
-                .get(port)
-                .map(|port_state| {
-                    port_state.status == PortStatus::Disconnected
-                        && now.saturating_sub(Duration::from_secs(port_state.last_change))
-                            >= PORT_OWNERSHIP_TIMEOUT
-                })
-                .unwrap_or(true)
+            self.port_state.get(port).map_or(true, |port_state| {
+                port_state.status == PortStatus::Disconnected
+                    && now.saturating_sub(Duration::from_secs(port_state.last_change))
+                        >= PORT_OWNERSHIP_TIMEOUT
+            })
         });
 
         if let Some((&old_number, &port)) = removable_entry {

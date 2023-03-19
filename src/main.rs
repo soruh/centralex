@@ -1,3 +1,6 @@
+#![warn(clippy::pedantic)]
+#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+
 use std::{
     fmt::Debug,
     fs::File,
@@ -15,17 +18,14 @@ use serde::{Deserialize, Deserializer};
 use time::format_description::OwnedFormatItem;
 use tokio::{
     io::AsyncWriteExt,
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     sync::Mutex,
     time::{sleep, Instant},
 };
 use tracing::{error, info, warn, Level};
 
-use crate::{
-    client::connection_handler,
-    ports::{AllowedPorts, PortHandler, PortStatus},
-};
-use crate::{constants::CACHE_STORE_INTERVAL, packets::PacketKind};
+use crate::packets::PacketKind;
+use crate::ports::{cache_daemon, AllowedList, PortHandler, PortStatus};
 
 pub mod auth;
 pub mod client;
@@ -41,7 +41,7 @@ type UnixTimestamp = u64;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    allowed_ports: AllowedPorts,
+    allowed_ports: AllowedList,
     #[serde(deserialize_with = "parse_socket_addr")]
     listen_addr: SocketAddr,
     #[serde(deserialize_with = "parse_socket_addr")]
@@ -135,12 +135,117 @@ static TIME_ZONE_OFFSET: once_cell::sync::OnceCell<time::UtcOffset> =
 
 static TIME_FORMAT: once_cell::sync::OnceCell<OwnedFormatItem> = once_cell::sync::OnceCell::new();
 
+fn setup_tracing(config: &Config) {
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{filter, fmt};
+
+    // build a `Subscriber` by combining layers with a
+    // `tracing_subscriber::Registry`:
+    let registry = tracing_subscriber::registry();
+
+    #[cfg(feature = "tokio_console")]
+    let registry = registry.with(console_subscriber::spawn());
+
+    registry
+        .with(
+            fmt::layer()
+                .with_target(true)
+                .with_timer(fmt::time::OffsetTime::new(
+                    *TIME_ZONE_OFFSET.get().unwrap(),
+                    TIME_FORMAT.get().unwrap(),
+                ))
+                .with_filter(filter::LevelFilter::from_level(config.log_level))
+                .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
+                    meta.target().starts_with("centralex")
+                })),
+        )
+        .init();
+}
+
+async fn connection_handler(
+    mut stream: TcpStream,
+    addr: SocketAddr,
+    config: Arc<Config>,
+    port_handler: Arc<Mutex<PortHandler>>,
+) {
+    use futures::future::FutureExt;
+
+    let mut handler_metadata = HandlerMetadata::default();
+
+    let res = std::panic::AssertUnwindSafe(client::handler(
+        &mut stream,
+        addr,
+        &config,
+        &mut handler_metadata,
+        &port_handler,
+    ))
+    .catch_unwind()
+    .await;
+
+    let error = match res {
+        Err(err) => {
+            let err = err
+                .downcast::<String>()
+                .map_or_else(|_| "?".to_owned(), |err| *err);
+
+            Some(format!("panic at: {err}"))
+        }
+        Ok(Err(err)) => Some(err.to_string()),
+        Ok(Ok(())) => None,
+    };
+
+    if let Some(error) = error {
+        error!(%addr, %error, "Client had an error");
+
+        let mut packet = Packet::default();
+
+        packet.data.extend_from_slice(error.as_bytes());
+        packet.data.truncate((u8::MAX - 1) as usize);
+        packet.data.push(0);
+        packet.header = Header {
+            kind: PacketKind::Error.raw(),
+            length: packet.data.len().try_into().unwrap(), // this will never fail, as we just truncated the vector
+        };
+
+        let (_, mut writer) = stream.split();
+        let _ = packet.send(&mut writer).await;
+    }
+
+    if let Some(port) = handler_metadata.port {
+        let mut port_handler = port_handler.lock().await;
+
+        if let Some(port_state) = port_handler.port_state.get_mut(&port) {
+            port_state.new_state(PortStatus::Disconnected);
+            port_handler.register_update();
+        }
+
+        if let Some(listener) = handler_metadata.listener.take() {
+            let res = port_handler.start_rejector(
+                port,
+                listener,
+                Packet {
+                    header: Header {
+                        kind: PacketKind::Reject.raw(),
+                        length: 3,
+                    },
+                    data: b"nc\0".to_vec(),
+                },
+            );
+
+            if let Err(error) = res {
+                error!(%port, %error, "failed to start rejector");
+            }
+        }
+    }
+
+    sleep(Duration::from_secs(3)).await;
+    let _ = stream.shutdown().await;
+}
+
 fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::load("config.json")?);
 
-    if config.allowed_ports.is_empty() {
-        panic!("no allowed ports");
-    }
+    assert!(!config.allowed_ports.is_empty(), "no allowed ports");
 
     TIME_FORMAT.set(config.time_format.clone()).unwrap();
 
@@ -155,72 +260,21 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()?
         .block_on(async move {
-            {
-                use tracing_subscriber::prelude::*;
-                use tracing_subscriber::*;
-
-                // build a `Subscriber` by combining layers with a
-                // `tracing_subscriber::Registry`:
-                let registry = tracing_subscriber::registry();
-
-                #[cfg(feature = "tokio_console")]
-                let registry = registry.with(console_subscriber::spawn());
-
-                registry
-                    .with(
-                        fmt::layer()
-                            .with_target(true)
-                            .with_timer(fmt::time::OffsetTime::new(
-                                *TIME_ZONE_OFFSET.get().unwrap(),
-                                TIME_FORMAT.get().unwrap(),
-                            ))
-                            .with_filter(filter::LevelFilter::from_level(config.log_level))
-                            .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
-                                meta.target().starts_with("centralex")
-                            })),
-                    )
-                    .init();
-            }
+            setup_tracing(&config);
 
             let cache_path = PathBuf::from("cache.json");
 
-            let (change_sender, mut change_receiver) = tokio::sync::watch::channel(Instant::now());
+            let (change_sender, change_receiver) = tokio::sync::watch::channel(Instant::now());
 
             let mut port_handler = PortHandler::load_or_default(&cache_path, change_sender);
             port_handler.update_allowed_ports(&config.allowed_ports);
 
             let port_handler = Arc::new(Mutex::new(port_handler));
 
-            {
-                let port_handler = port_handler.clone();
-                spawn("cache daemon", async move {
-                    let mut last_store = Instant::now() - 2 * CACHE_STORE_INTERVAL;
-                    let mut change_timeout = None;
-                    loop {
-                        if let Some(change_timeout) = change_timeout.take() {
-                            tokio::time::timeout(change_timeout, change_receiver.changed())
-                                .await
-                                .unwrap_or(Ok(()))
-                        } else {
-                            change_receiver.changed().await
-                        }
-                        .expect("failed to wait for cache changes");
-
-                        let time_since_last_store = last_store.elapsed();
-
-                        if time_since_last_store >= CACHE_STORE_INTERVAL {
-                            let port_handler = port_handler.lock().await;
-
-                            last_store = Instant::now();
-                            if let Err(err) = port_handler.store(&cache_path) {
-                                error!("failed to store cache: {err:?}");
-                            }
-                        } else {
-                            change_timeout = Some(CACHE_STORE_INTERVAL - time_since_last_store);
-                        }
-                    }
-                });
-            }
+            spawn(
+                "cache daemon",
+                cache_daemon(port_handler.clone(), cache_path, change_receiver),
+            );
 
             #[cfg(feature = "debug_server")]
             if let Some(listen_addr) = config.debug_server_addr {
@@ -237,86 +291,13 @@ fn main() -> anyhow::Result<()> {
                 "centralex server listening"
             );
 
-            while let Ok((mut stream, addr)) = listener.accept().await {
+            while let Ok((stream, addr)) = listener.accept().await {
                 info!(%addr, "new connection");
 
-                let port_handler = port_handler.clone();
-                let config = config.clone();
-
-                let mut handler_metadata = HandlerMetadata::default();
-
-                spawn(&format!("connection to {addr}"), async move {
-                    use futures::future::FutureExt;
-
-                    let res = std::panic::AssertUnwindSafe(connection_handler(
-                        &config,
-                        &mut handler_metadata,
-                        &port_handler,
-                        &mut stream,
-                    ))
-                    .catch_unwind()
-                    .await;
-
-                    let error = match res {
-                        Err(err) => {
-                            let err = err
-                                .downcast::<String>()
-                                .map(|err| *err)
-                                .unwrap_or_else(|_| "?".to_owned());
-
-                            Some(format!("panic at: {err}"))
-                        }
-                        Ok(Err(err)) => Some(err.to_string()),
-                        Ok(Ok(())) => None,
-                    };
-
-                    if let Some(error) = error {
-                        error!(%addr, %error, "Client had an error");
-
-                        let mut packet = Packet::default();
-
-                        packet.data.extend_from_slice(error.as_bytes());
-                        packet.data.truncate((u8::MAX - 1) as usize);
-                        packet.data.push(0);
-                        packet.header = Header {
-                            kind: PacketKind::Error.raw(),
-                            length: packet.data.len() as u8,
-                        };
-
-                        let (_, mut writer) = stream.split();
-                        let _ = packet.send(&mut writer).await;
-                    }
-
-                    if let Some(port) = handler_metadata.port {
-                        let mut port_handler = port_handler.lock().await;
-
-                        if let Some(port_state) = port_handler.port_state.get_mut(&port) {
-                            port_state.new_state(PortStatus::Disconnected);
-                            port_handler.register_update();
-                        }
-
-                        if let Some(listener) = handler_metadata.listener.take() {
-                            let res = port_handler.start_rejector(
-                                port,
-                                listener,
-                                Packet {
-                                    header: Header {
-                                        kind: PacketKind::Reject.raw(),
-                                        length: 3,
-                                    },
-                                    data: b"nc\0".to_vec(),
-                                },
-                            );
-
-                            if let Err(error) = res {
-                                error!(%port, %error, "failed to start rejector");
-                            }
-                        }
-                    }
-
-                    sleep(Duration::from_secs(3)).await;
-                    let _ = stream.shutdown().await;
-                });
+                spawn(
+                    &format!("connection to {addr}"),
+                    connection_handler(stream, addr, config.clone(), port_handler.clone()),
+                );
             }
 
             Ok(())

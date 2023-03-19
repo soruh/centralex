@@ -53,11 +53,7 @@ pub async fn dyn_ip_update(
 
             bail!(
                 "{}",
-                std::str::from_utf8(
-                    first_zero
-                        .map(|i| &packet.data[..i])
-                        .unwrap_or(&packet.data),
-                )?
+                std::str::from_utf8(first_zero.map_or(&packet.data, |i| &packet.data[..i]),)?
             )
         }
 

@@ -1,8 +1,11 @@
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail, Context};
 use std::{net::SocketAddr, time::Instant};
 use tokio::{
     io::AsyncWriteExt,
-    net::{TcpListener, TcpStream},
+    net::{
+        tcp::{ReadHalf, WriteHalf},
+        TcpListener, TcpStream,
+    },
     select,
     sync::Mutex,
     time::{sleep, timeout},
@@ -17,32 +20,15 @@ use crate::{
     Config, HandlerMetadata,
 };
 
-pub async fn connection_handler(
+async fn authenticate(
     config: &Config,
-    handler_metadata: &mut HandlerMetadata,
     port_handler: &Mutex<PortHandler>,
-    stream: &mut TcpStream,
-) -> anyhow::Result<()> {
-    let addr = stream.peer_addr()?;
-
-    let (mut reader, mut writer) = stream.split();
-
-    let mut packet = Packet::default();
-
-    match timeout(AUTH_TIMEOUT, packet.recv_into_cancelation_safe(&mut reader)).await {
-        Ok(res) => res?,
-        Err(_) => {
-            writer.write_all(REJECT_TIMEOUT).await?;
-            return Ok(());
-        }
-    }
-
-    let RemConnect { number, pin } = packet.as_rem_connect()?;
-
-    handler_metadata.number = Some(number);
-
+    handler_metadata: &mut HandlerMetadata,
+    number: u32,
+    pin: u16,
+) -> anyhow::Result<Option<u16>> {
     let mut authenticated = false;
-    let port = loop {
+    loop {
         let mut updated_server = false;
 
         let port = port_handler
@@ -51,8 +37,7 @@ pub async fn connection_handler(
             .allocate_port_for_number(config, number);
 
         let Some(port) = port else {
-            writer.write_all(REJECT_OOP).await?;
-            return Ok(());
+            return Ok(None);
         };
 
         // make sure the client is authenticated before opening any ports
@@ -96,42 +81,38 @@ pub async fn connection_handler(
 
                 handler_metadata.port = Some(port);
 
-                break port;
+                break Ok(Some(port));
             }
             Err(_err) => {
                 port_handler.mark_port_error(number, port);
                 continue;
             }
         };
-    };
-
-    info!(%addr, number, port, "authenticated");
-
-    let listener = handler_metadata.listener.as_mut().unwrap(); // we only break from the loop if this is set
-
-    packet.header = Header {
-        kind: PacketKind::RemConfirm.raw(),
-        length: 0,
-    };
-    packet.data.clear();
-    packet.send(&mut writer).await?;
-
-    #[derive(Debug)]
-    enum Result {
-        Caller {
-            packet: Packet,
-            stream: TcpStream,
-            addr: SocketAddr,
-        },
-        Packet {
-            packet: Packet,
-        },
     }
+}
 
+#[derive(Debug)]
+enum IdleResult {
+    Caller {
+        packet: Packet,
+        stream: TcpStream,
+        addr: SocketAddr,
+    },
+    Disconnect {
+        packet: Packet,
+    },
+}
+
+async fn idle(
+    listener: &mut TcpListener,
+    mut packet: Packet,
+    reader: &mut ReadHalf<'_>,
+    writer: &mut WriteHalf<'_>,
+) -> anyhow::Result<Option<IdleResult>> {
     let mut last_ping_sent_at = Instant::now();
     let mut last_ping_received_at = Instant::now();
 
-    let result = loop {
+    loop {
         trace!(
             seconds = SEND_PING_INTERVAL
                 .saturating_sub(last_ping_sent_at.elapsed())
@@ -151,16 +132,16 @@ pub async fn connection_handler(
         select! {
             caller = listener.accept() => {
                 let (stream, addr) = caller?;
-                break Result::Caller { packet, stream, addr }
+                break Ok(Some(IdleResult::Caller { packet, stream, addr }))
             },
-            _ = Packet::peek_packet_kind(&mut reader) => {
-                packet.recv_into(&mut reader).await?;
+            _ = Packet::peek_packet_kind( reader) => {
+                packet.recv_into( reader).await?;
 
                 if packet.kind() == PacketKind::Ping {
                     trace!("received ping");
                     last_ping_received_at = Instant::now();
                 } else {
-                    break Result::Packet { packet }
+                    break Ok(Some(IdleResult::Disconnect { packet }))
                 }
             },
             _ = sleep(send_next_ping_in) => {
@@ -170,13 +151,21 @@ pub async fn connection_handler(
             }
             _ = sleep(next_ping_expected_in) => {
                 writer.write_all(REJECT_TIMEOUT).await?;
-                return Ok(());
+                break Ok(None);
             }
         }
-    };
+    }
+}
 
-    let (mut client, mut packet) = match result {
-        Result::Packet { mut packet } => {
+async fn notify_or_disconnect(
+    result: IdleResult,
+    handler_metadata: &mut HandlerMetadata,
+    port_handler: &Mutex<PortHandler>,
+    port: u16,
+    writer: &mut WriteHalf<'_>,
+) -> anyhow::Result<Option<(TcpStream, Packet)>> {
+    match result {
+        IdleResult::Disconnect { mut packet } => {
             if matches!(packet.kind(), PacketKind::End | PacketKind::Reject) {
                 info!(?packet, "got disconnect packet");
 
@@ -184,7 +173,7 @@ pub async fn connection_handler(
 
                 if packet.data.is_empty() {
                     packet.data.extend_from_slice(b"nc\0");
-                    packet.header.length = packet.data.len() as u8;
+                    packet.header.length = packet.data.len().try_into().unwrap();
                 }
 
                 port_handler.lock().await.start_rejector(
@@ -195,12 +184,12 @@ pub async fn connection_handler(
                         .expect("tried to start rejector twice"),
                     packet,
                 )?;
-                return Ok(());
+                Ok(None)
             } else {
-                bail!("unexpected packet: {:?}", packet.kind())
+                Err(anyhow!("unexpected packet: {:?}", packet.kind()))
             }
         }
-        Result::Caller {
+        IdleResult::Caller {
             mut packet,
             stream,
             addr,
@@ -216,27 +205,143 @@ pub async fn connection_handler(
             */
             packet.header = Header {
                 kind: PacketKind::RemCall.raw(),
-                length: packet.data.len() as u8,
+                length: packet.data.len().try_into().unwrap(), // ip addresses are less then 255 bytes long
             };
 
-            packet.send(&mut writer).await?;
+            packet.send(writer).await?;
 
-            (stream, packet)
-        }
-    };
-
-    match timeout(
-        CALL_ACK_TIMEOUT,
-        packet.recv_into_cancelation_safe(&mut reader),
-    )
-    .await
-    {
-        Ok(res) => res?,
-        Err(_) => {
-            writer.write_all(REJECT_TIMEOUT).await?;
-            return Ok(());
+            Ok(Some((stream, packet)))
         }
     }
+}
+
+async fn connect(
+    mut packet: Packet,
+    port_handler: &Mutex<PortHandler>,
+    port: u16,
+    handler_metadata: &mut HandlerMetadata,
+    stream: &mut TcpStream,
+    client: &mut TcpStream,
+) -> anyhow::Result<()> {
+    packet.header = Header {
+        kind: PacketKind::Reject.raw(),
+        length: 4,
+    };
+    packet.data.clear();
+    packet.data.extend_from_slice(b"occ");
+    packet.data.push(0);
+
+    {
+        let mut port_handler = port_handler.lock().await;
+
+        port_handler.register_update();
+        port_handler
+            .port_state
+            .entry(port)
+            .or_default()
+            .new_state(PortStatus::InCall);
+
+        port_handler.start_rejector(
+            port,
+            handler_metadata
+                .listener
+                .take()
+                .expect("tried to start rejector twice"),
+            packet,
+        )?;
+    }
+
+    stream.set_nodelay(true)?;
+    client.set_nodelay(true)?;
+
+    let _ = timeout(CALL_TIMEOUT, tokio::io::copy_bidirectional(stream, client)).await;
+
+    {
+        let mut port_handler = port_handler.lock().await;
+
+        port_handler.register_update();
+        port_handler
+            .port_state
+            .entry(port)
+            .or_default()
+            .new_state(PortStatus::Disconnected);
+
+        port_handler
+            .change_rejector(port, |packet| {
+                packet.data.clear();
+                packet.data.extend_from_slice(b"nc");
+                packet.data.push(0);
+                packet.header = Header {
+                    kind: PacketKind::Reject.raw(),
+                    length: packet.data.len().try_into().unwrap(),
+                };
+            })
+            .await?;
+    }
+
+    Ok(())
+}
+
+pub async fn handler(
+    stream: &mut TcpStream,
+    addr: SocketAddr,
+    config: &Config,
+    handler_metadata: &mut HandlerMetadata,
+    port_handler: &Mutex<PortHandler>,
+) -> anyhow::Result<()> {
+    let (mut reader, mut writer) = stream.split();
+
+    let mut packet = Packet::default();
+
+    let Ok(res) = timeout(AUTH_TIMEOUT, packet.recv_into_cancelation_safe(&mut reader)).await else {
+        writer.write_all(REJECT_TIMEOUT).await?;
+        return Ok(());
+    };
+    res?;
+
+    let RemConnect { number, pin } = packet.as_rem_connect()?;
+
+    handler_metadata.number = Some(number);
+
+    let Some(port) = authenticate(config, port_handler, handler_metadata, number, pin).await? else {
+        writer.write_all(REJECT_OOP).await?;
+        return Ok(());
+    };
+
+    info!(%addr, number, port, "authenticated");
+
+    let listener = handler_metadata.listener.as_mut().unwrap(); // we are only authenticated if this is set
+
+    packet.header = Header {
+        kind: PacketKind::RemConfirm.raw(),
+        length: 0,
+    };
+    packet.data.clear();
+    packet.send(&mut writer).await?;
+
+    let Some(idle_result) = idle(
+        listener,
+        packet,
+        &mut reader,
+        &mut writer,
+    ).await? else {
+        return Ok(());
+    };
+
+    let Some((mut client, mut packet)) = notify_or_disconnect(idle_result, handler_metadata, port_handler, port, &mut writer).await? else {
+        return Ok(());
+   };
+
+    let recv = timeout(
+        CALL_ACK_TIMEOUT,
+        packet.recv_into_cancelation_safe(&mut reader),
+    );
+
+    let Ok(res) = recv.await else {
+        writer.write_all(REJECT_TIMEOUT).await?;
+        return Ok(());
+    };
+    res?;
 
     match packet.kind() {
         PacketKind::End | PacketKind::Reject => {
@@ -253,67 +358,15 @@ pub async fn connection_handler(
         }
 
         PacketKind::RemAck => {
-            packet.header = Header {
-                kind: PacketKind::Reject.raw(),
-                length: 4,
-            };
-            packet.data.clear();
-            packet.data.extend_from_slice(b"occ");
-            packet.data.push(0);
-
-            {
-                let mut port_handler = port_handler.lock().await;
-
-                port_handler.register_update();
-                port_handler
-                    .port_state
-                    .entry(port)
-                    .or_default()
-                    .new_state(PortStatus::InCall);
-
-                port_handler.start_rejector(
-                    port,
-                    handler_metadata
-                        .listener
-                        .take()
-                        .expect("tried to start rejector twice"),
-                    packet,
-                )?;
-            }
-
-            stream.set_nodelay(true)?;
-            client.set_nodelay(true)?;
-
-            let _ = timeout(
-                CALL_TIMEOUT,
-                tokio::io::copy_bidirectional(stream, &mut client),
+            connect(
+                packet,
+                port_handler,
+                port,
+                handler_metadata,
+                stream,
+                &mut client,
             )
-            .await;
-
-            {
-                let mut port_handler = port_handler.lock().await;
-
-                port_handler.register_update();
-                port_handler
-                    .port_state
-                    .entry(port)
-                    .or_default()
-                    .new_state(PortStatus::Disconnected);
-
-                port_handler
-                    .change_rejector(port, |packet| {
-                        packet.data.clear();
-                        packet.data.extend_from_slice(b"nc");
-                        packet.data.push(0);
-                        packet.header = Header {
-                            kind: PacketKind::Reject.raw(),
-                            length: packet.data.len() as u8,
-                        };
-                    })
-                    .await?;
-            }
-
-            Ok(())
+            .await
         }
 
         kind => bail!("unexpected packet: {:?}", kind),

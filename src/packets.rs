@@ -26,7 +26,9 @@ pub enum PacketKind {
     Error = 0xff,
 }
 
+#[allow(clippy::enum_glob_use)]
 impl PacketKind {
+    #[must_use]
     fn from_u8(raw: u8) -> Self {
         use PacketKind::*;
 
@@ -45,6 +47,7 @@ impl PacketKind {
         }
     }
 
+    #[must_use]
     pub fn raw(&self) -> u8 {
         use PacketKind::*;
 
@@ -154,6 +157,7 @@ impl Packet {
         Ok(())
     }
 
+    #[must_use]
     pub fn kind(&self) -> PacketKind {
         PacketKind::from_u8(self.header.kind)
     }
