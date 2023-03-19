@@ -258,49 +258,51 @@ fn main() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(async move {
-            setup_tracing(&config);
+        .block_on(tokio_main(config))
+}
 
-            let cache_path = PathBuf::from("cache.json");
+async fn tokio_main(config: Arc<Config>) -> anyhow::Result<()> {
+    setup_tracing(&config);
 
-            let (change_sender, change_receiver) = tokio::sync::watch::channel(Instant::now());
+    let cache_path = PathBuf::from("cache.json");
 
-            let mut port_handler = PortHandler::load_or_default(&cache_path, change_sender);
-            port_handler.update_allowed_ports(&config.allowed_ports);
+    let (change_sender, change_receiver) = tokio::sync::watch::channel(Instant::now());
 
-            let port_handler = Arc::new(Mutex::new(port_handler));
+    let mut port_handler = PortHandler::load_or_default(&cache_path, change_sender);
+    port_handler.update_allowed_ports(&config.allowed_ports);
 
-            spawn(
-                "cache daemon",
-                cache_daemon(port_handler.clone(), cache_path, change_receiver),
-            );
+    let port_handler = Arc::new(Mutex::new(port_handler));
 
-            #[cfg(feature = "debug_server")]
-            if let Some(listen_addr) = config.debug_server_addr {
-                warn!(%listen_addr, "debug server listening");
-                spawn(
-                    "debug server",
-                    debug_server(listen_addr, port_handler.clone()),
-                );
-            }
+    spawn(
+        "cache daemon",
+        cache_daemon(port_handler.clone(), cache_path, change_receiver),
+    );
 
-            let listener = TcpListener::bind(config.listen_addr).await?;
-            warn!(
-                listen_addr = %config.listen_addr,
-                "centralex server listening"
-            );
+    #[cfg(feature = "debug_server")]
+    if let Some(listen_addr) = config.debug_server_addr {
+        warn!(%listen_addr, "debug server listening");
+        spawn(
+            "debug server",
+            debug_server(listen_addr, port_handler.clone()),
+        );
+    }
 
-            while let Ok((stream, addr)) = listener.accept().await {
-                info!(%addr, "new connection");
+    let listener = TcpListener::bind(config.listen_addr).await?;
+    warn!(
+        listen_addr = %config.listen_addr,
+        "centralex server listening"
+    );
 
-                spawn(
-                    &format!("connection to {addr}"),
-                    connection_handler(stream, addr, config.clone(), port_handler.clone()),
-                );
-            }
+    while let Ok((stream, addr)) = listener.accept().await {
+        info!(%addr, "new connection");
 
-            Ok(())
-        })
+        spawn(
+            &format!("connection to {addr}"),
+            connection_handler(stream, addr, config.clone(), port_handler.clone()),
+        );
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Default)]
