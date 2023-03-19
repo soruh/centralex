@@ -1,5 +1,5 @@
 #![warn(clippy::pedantic)]
-#![allow(clippy::missing_errors_doc)]
+// #![allow(clippy::missing_errors_doc)]
 
 use std::{
     fmt::Debug,
@@ -42,10 +42,13 @@ type UnixTimestamp = u64;
 #[derive(Debug, Deserialize)]
 pub struct Config {
     allowed_ports: AllowedList,
+
     #[serde(deserialize_with = "parse_socket_addr")]
     listen_addr: SocketAddr,
+
     #[serde(deserialize_with = "parse_socket_addr")]
     dyn_ip_server: SocketAddr,
+
     #[cfg(feature = "debug_server")]
     #[serde(deserialize_with = "maybe_parse_socket_addr")]
     #[serde(default)]
@@ -220,7 +223,7 @@ async fn connection_handler(
         }
 
         if let Some(listener) = handler_metadata.listener.take() {
-            let res = port_handler.start_rejector(
+            port_handler.start_rejector(
                 port,
                 listener,
                 Packet {
@@ -231,10 +234,6 @@ async fn connection_handler(
                     data: b"nc\0".to_vec(),
                 },
             );
-
-            if let Err(error) = res {
-                error!(%port, %error, "failed to start rejector");
-            }
         }
     }
 

@@ -5,6 +5,9 @@ use tracing::debug;
 
 use crate::packets::{Header, Packet, PacketKind};
 
+/// # Errors
+/// - the dyn ip server returns a malformed response or is unreachable
+/// - the authentication fails
 pub async fn dyn_ip_update(
     server: &SocketAddr,
     number: u32,

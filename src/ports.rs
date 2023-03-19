@@ -278,7 +278,8 @@ impl PortHandler {
             .expect("failed to notify cache writer");
     }
 
-    pub fn store(&self, cache: &Path) -> anyhow::Result<()> {
+    #[allow(clippy::missing_errors_doc)]
+    pub fn store(&self, cache: &Path) -> std::io::Result<()> {
         debug!("storing cache");
         let temp_file = cache.with_extension(".temp");
 
@@ -288,6 +289,7 @@ impl PortHandler {
         Ok(())
     }
 
+    #[allow(clippy::missing_errors_doc)]
     pub fn load(
         cache: &Path,
         change_sender: tokio::sync::watch::Sender<Instant>,
@@ -344,12 +346,7 @@ impl PortHandler {
         });
     }
 
-    pub fn start_rejector(
-        &mut self,
-        port: Port,
-        listener: TcpListener,
-        packet: Packet,
-    ) -> anyhow::Result<()> {
+    pub fn start_rejector(&mut self, port: Port, listener: TcpListener, packet: Packet) {
         info!(port, ?packet, "starting rejector");
 
         let port_guard = Rejector::start(listener, packet);
@@ -357,7 +354,6 @@ impl PortHandler {
         if self.port_guards.insert(port, port_guard).is_some() {
             unreachable!("Tried to start rejector that is already running. This should have been impossible since it requires two listeners on the same port.");
         }
-        Ok(())
     }
 
     pub async fn stop_rejector(&mut self, port: Port) -> Option<(TcpListener, Packet)> {
@@ -366,6 +362,8 @@ impl PortHandler {
         Some(self.port_guards.remove(&port)?.stop().await)
     }
 
+    /// # Errors
+    /// - the rejector must be running
     pub async fn change_rejector(
         &mut self,
         port: Port,
@@ -378,7 +376,9 @@ impl PortHandler {
 
         f(&mut packet);
 
-        self.start_rejector(port, listener, packet)
+        self.start_rejector(port, listener, packet);
+
+        Ok(())
     }
 }
 

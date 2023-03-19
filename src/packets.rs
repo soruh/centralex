@@ -108,12 +108,14 @@ pub struct RemConnect {
 }
 
 impl Packet {
+    #[allow(clippy::missing_errors_doc)]
     pub async fn peek_packet_kind(stream: &mut ReadHalf<'_>) -> std::io::Result<PacketKind> {
         Self::peek_packet_kind_raw(stream)
             .await
             .map(PacketKind::from_u8)
     }
 
+    #[allow(clippy::missing_errors_doc)]
     pub async fn peek_packet_kind_raw(stream: &mut ReadHalf<'_>) -> std::io::Result<u8> {
         let mut kind = 0;
         let n = stream.peek(std::slice::from_mut(&mut kind)).await?;
@@ -125,6 +127,7 @@ impl Packet {
         }
     }
 
+    #[allow(clippy::missing_errors_doc)]
     pub async fn recv_into_cancelation_safe(
         &mut self,
         stream: &mut ReadHalf<'_>,
@@ -139,6 +142,7 @@ impl Packet {
         self.recv_into(stream).await
     }
 
+    #[allow(clippy::missing_errors_doc)]
     pub async fn recv_into(&mut self, stream: &mut ReadHalf<'_>) -> std::io::Result<()> {
         let header_bytes = bytemuck::bytes_of_mut(&mut self.header);
 
@@ -151,6 +155,7 @@ impl Packet {
         Ok(())
     }
 
+    #[allow(clippy::missing_errors_doc)]
     pub async fn send(&self, stream: &mut WriteHalf<'_>) -> std::io::Result<()> {
         stream.write_all(bytemuck::bytes_of(&self.header)).await?;
         stream.write_all(&self.data).await?;
@@ -162,6 +167,8 @@ impl Packet {
         PacketKind::from_u8(self.header.kind)
     }
 
+    /// # Errors
+    /// the packet must be a `RemConnect` packet and must contain at least 6 bytes of data
     pub fn as_rem_connect(&self) -> anyhow::Result<RemConnect> {
         if self.kind() != PacketKind::RemConnect {
             bail!("Unexpected Packet: {:?} expected RemConnect", self.kind());

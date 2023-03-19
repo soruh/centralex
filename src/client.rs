@@ -20,6 +20,8 @@ use crate::{
     Config, HandlerMetadata,
 };
 
+/// # Errors
+/// - the client authentication fails
 async fn authenticate(
     config: &Config,
     port_handler: &Mutex<PortHandler>,
@@ -57,37 +59,33 @@ async fn authenticate(
             TcpListener::bind((config.listen_addr.ip(), port)).await
         };
 
-        match listener {
-            Ok(listener) => {
-                // make sure that if we have an error, we still have access
-                // to the listener in the error handler.
-                handler_metadata.listener = Some(listener);
+        if let Ok(listener) = listener {
+            // make sure that if we have an error, we still have access
+            // to the listener in the error handler.
+            handler_metadata.listener = Some(listener);
 
-                // if we authenticated a client for a port we then failed to open
-                // we need to update the server here once a port that can be opened
-                // has been found
-                if !updated_server {
-                    let _ip = dyn_ip_update(&config.dyn_ip_server, number, pin, port)
-                        .await
-                        .context("dy-ip update")?;
-                }
-
-                port_handler.register_update();
-                port_handler
-                    .port_state
-                    .entry(port)
-                    .or_default()
-                    .new_state(PortStatus::Idle);
-
-                handler_metadata.port = Some(port);
-
-                break Ok(Some(port));
+            // if we authenticated a client for a port we then failed to open
+            // we need to update the server here once a port that can be opened
+            // has been found
+            if !updated_server {
+                let _ip = dyn_ip_update(&config.dyn_ip_server, number, pin, port)
+                    .await
+                    .context("dy-ip update")?;
             }
-            Err(_err) => {
-                port_handler.mark_port_error(number, port);
-                continue;
-            }
-        };
+
+            port_handler.register_update();
+            port_handler
+                .port_state
+                .entry(port)
+                .or_default()
+                .new_state(PortStatus::Idle);
+
+            handler_metadata.port = Some(port);
+
+            break Ok(Some(port));
+        }
+
+        port_handler.mark_port_error(number, port);
     }
 }
 
@@ -183,7 +181,7 @@ async fn notify_or_disconnect(
                         .take()
                         .expect("tried to start rejector twice"),
                     packet,
-                )?;
+                );
                 Ok(None)
             } else {
                 Err(anyhow!("unexpected packet: {:?}", packet.kind()))
@@ -248,7 +246,7 @@ async fn connect(
                 .take()
                 .expect("tried to start rejector twice"),
             packet,
-        )?;
+        );
     }
 
     stream.set_nodelay(true)?;
@@ -282,6 +280,12 @@ async fn connect(
     Ok(())
 }
 
+/// # Errors
+/// - the connection to the client or the caller is interupted
+/// - the clients sends unexpected or malformed packets
+/// - accepting a tcp connection fails
+/// - settings tcp socket properties fails
+/// - the client authentication fails
 pub async fn handler(
     stream: &mut TcpStream,
     addr: SocketAddr,
@@ -354,7 +358,7 @@ pub async fn handler(
                     .take()
                     .expect("tried to start rejector twice"),
                 packet,
-            )?;
+            );
 
             Ok(())
         }
