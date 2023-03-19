@@ -1,19 +1,20 @@
 use std::net::SocketAddr;
 
-use anyhow::bail;
-use tracing::debug;
+use eyre::eyre;
+use tracing::{debug, instrument};
 
 use crate::packets::{Header, Packet, PacketKind};
 
 /// # Errors
 /// - the dyn ip server returns a malformed response or is unreachable
 /// - the authentication fails
+#[instrument]
 pub async fn dyn_ip_update(
     server: &SocketAddr,
     number: u32,
     pin: u16,
     port: u16,
-) -> anyhow::Result<std::net::Ipv4Addr> {
+) -> eyre::Result<std::net::Ipv4Addr> {
     debug!(%number, %port, "starting dyn ip update");
 
     let mut packet = Packet {
@@ -41,7 +42,7 @@ pub async fn dyn_ip_update(
     let result = match packet.kind() {
         PacketKind::DynIpUpdateResponse => Ok(<[u8; 4]>::try_from(packet.data)
             .map_err(|err| {
-                anyhow::anyhow!(
+                eyre!(
                     "too little data for ip address. Need 4 bytes got {}",
                     err.len()
                 )
@@ -54,13 +55,13 @@ pub async fn dyn_ip_update(
                 .enumerate()
                 .find_map(|(i, x)| (*x == 0).then_some(i));
 
-            bail!(
+            return Err(eyre!(
                 "{}",
                 std::str::from_utf8(first_zero.map_or(&packet.data, |i| &packet.data[..i]),)?
-            )
+            ));
         }
 
-        _ => bail!("server returned unexpected packet"),
+        _ => return Err(eyre!("server returned unexpected packet")),
     };
 
     debug!(?result, "finished dyn ip update");

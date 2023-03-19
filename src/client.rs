@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context};
+use eyre::eyre;
 use std::{net::SocketAddr, time::Instant};
 use tokio::{
     io::AsyncWriteExt,
@@ -10,7 +10,7 @@ use tokio::{
     sync::Mutex,
     time::{sleep, timeout},
 };
-use tracing::{info, trace};
+use tracing::{info, instrument, trace};
 
 use crate::{
     auth::dyn_ip_update,
@@ -22,13 +22,14 @@ use crate::{
 
 /// # Errors
 /// - the client authentication fails
+#[instrument(skip(config, port_handler, handler_metadata))]
 async fn authenticate(
     config: &Config,
     port_handler: &Mutex<PortHandler>,
     handler_metadata: &mut HandlerMetadata,
     number: u32,
     pin: u16,
-) -> anyhow::Result<Option<u16>> {
+) -> eyre::Result<Option<u16>> {
     let mut authenticated = false;
     loop {
         let mut updated_server = false;
@@ -44,9 +45,7 @@ async fn authenticate(
 
         // make sure the client is authenticated before opening any ports
         if !authenticated {
-            let _ip = dyn_ip_update(&config.dyn_ip_server, number, pin, port)
-                .await
-                .context("dy-ip update")?;
+            let _ip = dyn_ip_update(&config.dyn_ip_server, number, pin, port).await?;
             authenticated = true;
             updated_server = true;
         }
@@ -68,9 +67,7 @@ async fn authenticate(
             // we need to update the server here once a port that can be opened
             // has been found
             if !updated_server {
-                let _ip = dyn_ip_update(&config.dyn_ip_server, number, pin, port)
-                    .await
-                    .context("dy-ip update")?;
+                let _ip = dyn_ip_update(&config.dyn_ip_server, number, pin, port).await?;
             }
 
             port_handler.register_update();
@@ -101,12 +98,13 @@ enum IdleResult {
     },
 }
 
+#[instrument(skip(listener, reader, writer, packet))]
 async fn idle(
     listener: &mut TcpListener,
     mut packet: Packet,
     reader: &mut ReadHalf<'_>,
     writer: &mut WriteHalf<'_>,
-) -> anyhow::Result<Option<IdleResult>> {
+) -> eyre::Result<Option<IdleResult>> {
     let mut last_ping_sent_at = Instant::now();
     let mut last_ping_received_at = Instant::now();
 
@@ -132,8 +130,8 @@ async fn idle(
                 let (stream, addr) = caller?;
                 break Ok(Some(IdleResult::Caller { packet, stream, addr }))
             },
-            _ = Packet::peek_packet_kind( reader) => {
-                packet.recv_into( reader).await?;
+            _ = Packet::peek_packet_kind(reader) => {
+                packet.recv_into(reader).await?;
 
                 if packet.kind() == PacketKind::Ping {
                     trace!("received ping");
@@ -148,6 +146,7 @@ async fn idle(
                 last_ping_sent_at = Instant::now();
             }
             _ = sleep(next_ping_expected_in) => {
+
                 writer.write_all(REJECT_TIMEOUT).await?;
                 break Ok(None);
             }
@@ -155,13 +154,14 @@ async fn idle(
     }
 }
 
+#[instrument(skip(port_handler, handler_metadata, writer))]
 async fn notify_or_disconnect(
     result: IdleResult,
     handler_metadata: &mut HandlerMetadata,
     port_handler: &Mutex<PortHandler>,
     port: u16,
     writer: &mut WriteHalf<'_>,
-) -> anyhow::Result<Option<(TcpStream, Packet)>> {
+) -> eyre::Result<Option<(TcpStream, Packet)>> {
     match result {
         IdleResult::Disconnect { mut packet } => {
             if matches!(packet.kind(), PacketKind::End | PacketKind::Reject) {
@@ -184,7 +184,7 @@ async fn notify_or_disconnect(
                 );
                 Ok(None)
             } else {
-                Err(anyhow!("unexpected packet: {:?}", packet.kind()))
+                Err(eyre!("unexpected packet: {:?}", packet.kind()))
             }
         }
         IdleResult::Caller {
@@ -213,14 +213,21 @@ async fn notify_or_disconnect(
     }
 }
 
+fn print_addr(stream: &TcpStream) -> String {
+    stream
+        .peer_addr()
+        .map_or_else(|_| "?".to_owned(), |addr| format!("{addr}"))
+}
+
+#[instrument(skip(packet, port_handler, handler_metadata, caller, client), fields(client_addr = print_addr(client), caller_addr = print_addr(caller)))]
 async fn connect(
     mut packet: Packet,
     port_handler: &Mutex<PortHandler>,
     port: u16,
     handler_metadata: &mut HandlerMetadata,
-    stream: &mut TcpStream,
     client: &mut TcpStream,
-) -> anyhow::Result<()> {
+    caller: &mut TcpStream,
+) -> eyre::Result<()> {
     packet.header = Header {
         kind: PacketKind::Reject.raw(),
         length: 4,
@@ -249,10 +256,10 @@ async fn connect(
         );
     }
 
-    stream.set_nodelay(true)?;
     client.set_nodelay(true)?;
+    caller.set_nodelay(true)?;
 
-    let _ = timeout(CALL_TIMEOUT, tokio::io::copy_bidirectional(stream, client)).await;
+    let _ = timeout(CALL_TIMEOUT, tokio::io::copy_bidirectional(client, caller)).await;
 
     {
         let mut port_handler = port_handler.lock().await;
@@ -286,14 +293,15 @@ async fn connect(
 /// - accepting a tcp connection fails
 /// - settings tcp socket properties fails
 /// - the client authentication fails
+#[instrument(skip_all)]
 pub async fn handler(
-    stream: &mut TcpStream,
+    client: &mut TcpStream,
     addr: SocketAddr,
     config: &Config,
     handler_metadata: &mut HandlerMetadata,
     port_handler: &Mutex<PortHandler>,
-) -> anyhow::Result<()> {
-    let (mut reader, mut writer) = stream.split();
+) -> eyre::Result<()> {
+    let (mut reader, mut writer) = client.split();
 
     let mut packet = Packet::default();
 
@@ -334,7 +342,7 @@ pub async fn handler(
         return Ok(());
     };
 
-    let Some((mut client, mut packet)) = notify_or_disconnect(idle_result, handler_metadata, port_handler, port, &mut writer).await? else {
+    let Some((mut caller, mut packet)) = notify_or_disconnect(idle_result, handler_metadata, port_handler, port, &mut writer).await? else {
         return Ok(());
    };
 
@@ -369,12 +377,12 @@ pub async fn handler(
                 port_handler,
                 port,
                 handler_metadata,
-                stream,
-                &mut client,
+                client,
+                &mut caller,
             )
             .await
         }
 
-        kind => bail!("unexpected packet: {:?}", kind),
+        kind => Err(eyre!("unexpected packet: {:?}", kind)),
     }
 }

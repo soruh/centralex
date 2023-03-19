@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
-use anyhow::bail;
 use bytemuck::{Pod, Zeroable};
+use eyre::eyre;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::tcp::{ReadHalf, WriteHalf},
@@ -169,16 +169,19 @@ impl Packet {
 
     /// # Errors
     /// the packet must be a `RemConnect` packet and must contain at least 6 bytes of data
-    pub fn as_rem_connect(&self) -> anyhow::Result<RemConnect> {
+    pub fn as_rem_connect(&self) -> eyre::Result<RemConnect> {
         if self.kind() != PacketKind::RemConnect {
-            bail!("Unexpected Packet: {:?} expected RemConnect", self.kind());
+            return Err(eyre!(
+                "Unexpected Packet: {:?} expected RemConnect",
+                self.kind()
+            ));
         }
 
         if self.data.len() < 6 {
-            bail!(
+            return Err(eyre!(
                 "Too little data for RemConnect. Need at least 6 Bytes got {}",
                 self.data.len()
-            );
+            ));
         }
 
         Ok(RemConnect {

@@ -10,7 +10,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::anyhow;
+use eyre::eyre;
 use serde::{Deserialize, Serialize};
 use tokio::{
     net::TcpListener,
@@ -18,7 +18,7 @@ use tokio::{
     task::JoinHandle,
     time::Instant,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
     constants::{CACHE_STORE_INTERVAL, PORT_OWNERSHIP_TIMEOUT, PORT_RETRY_TIME},
@@ -47,6 +47,7 @@ pub struct PortHandler {
     pub port_state: HashMap<Port, PortState>,
 }
 
+#[instrument(skip(port_handler, change_receiver))]
 pub async fn cache_daemon(
     port_handler: Arc<Mutex<PortHandler>>,
     cache_path: PathBuf,
@@ -104,7 +105,7 @@ fn duration_in_hours(duration: Duration) -> String {
 fn format_instant(instant: Instant) -> String {
     let when = duration_in_hours(instant.elapsed()) + " ago";
 
-    (|| -> anyhow::Result<_> {
+    (|| -> eyre::Result<_> {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)? - instant.elapsed();
         let date = time::OffsetDateTime::from_unix_timestamp(
             timestamp.as_secs().try_into().expect("timestamp overflow"),
@@ -279,6 +280,7 @@ impl PortHandler {
     }
 
     #[allow(clippy::missing_errors_doc)]
+    #[instrument(skip(self))]
     pub fn store(&self, cache: &Path) -> std::io::Result<()> {
         debug!("storing cache");
         let temp_file = cache.with_extension(".temp");
@@ -290,6 +292,7 @@ impl PortHandler {
     }
 
     #[allow(clippy::missing_errors_doc)]
+    #[instrument(skip(change_sender))]
     pub fn load(
         cache: &Path,
         change_sender: tokio::sync::watch::Sender<Instant>,
@@ -301,6 +304,7 @@ impl PortHandler {
     }
 
     #[must_use]
+    #[instrument(skip(change_sender))]
     pub fn load_or_default(
         path: &Path,
         change_sender: tokio::sync::watch::Sender<Instant>,
@@ -346,6 +350,7 @@ impl PortHandler {
         });
     }
 
+    #[instrument(skip(self, listener))]
     pub fn start_rejector(&mut self, port: Port, listener: TcpListener, packet: Packet) {
         info!(port, ?packet, "starting rejector");
 
@@ -356,6 +361,7 @@ impl PortHandler {
         }
     }
 
+    #[instrument(skip(self))]
     pub async fn stop_rejector(&mut self, port: Port) -> Option<(TcpListener, Packet)> {
         info!(port, "stopping rejector");
 
@@ -368,11 +374,11 @@ impl PortHandler {
         &mut self,
         port: Port,
         f: impl FnOnce(&mut Packet),
-    ) -> anyhow::Result<()> {
+    ) -> eyre::Result<()> {
         let (listener, mut packet) = self
             .stop_rejector(port)
             .await
-            .ok_or_else(|| anyhow!("tried to stop rejector that is not running"))?;
+            .ok_or_else(|| eyre!("tried to stop rejector that is not running"))?;
 
         f(&mut packet);
 
@@ -396,6 +402,7 @@ impl Debug for Rejector {
 }
 
 impl Rejector {
+    #[instrument(skip(listener))]
     fn start(listener: TcpListener, packet: Packet) -> Self {
         let port = listener.local_addr().map(|addr| addr.port()).unwrap_or(0);
         let state = Arc::new((Mutex::new(listener), packet));
@@ -419,6 +426,7 @@ impl Rejector {
 
         Self { state, handle }
     }
+    #[instrument(skip(self))]
     async fn stop(self) -> (TcpListener, Packet) {
         self.handle.abort();
         let _ = self.handle.await;
@@ -428,6 +436,7 @@ impl Rejector {
 }
 
 impl PortHandler {
+    #[instrument(skip(self, config))]
     pub fn allocate_port_for_number(&mut self, config: &Config, number: Number) -> Option<Port> {
         let port = if let Some(port) = self.allocated_ports.get(&number) {
             let already_connected = self
@@ -462,6 +471,7 @@ impl PortHandler {
         port
     }
 
+    #[instrument(skip(self, config))]
     fn try_recover_port(&mut self, config: &Config) -> Option<Port> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
 
@@ -522,6 +532,7 @@ impl PortHandler {
         None // TODO
     }
 
+    #[instrument(skip(self))]
     pub fn mark_port_error(&mut self, number: Number, port: Port) {
         warn!(port, number, "registering an error on");
         self.register_update();

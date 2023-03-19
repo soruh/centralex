@@ -22,7 +22,8 @@ use tokio::{
     sync::Mutex,
     time::{sleep, Instant},
 };
-use tracing::{error, info, warn, Level};
+use tracing::{error, info, instrument, warn, Level};
+use tracing_subscriber::fmt::time::FormatTime;
 
 use crate::packets::PacketKind;
 use crate::ports::{cache_daemon, AllowedList, PortHandler, PortStatus};
@@ -112,25 +113,28 @@ impl Config {
     }
 }
 
-#[cfg(not(feature = "tokio_console"))]
-#[track_caller]
-fn spawn<T: Send + 'static>(
-    _name: &str,
-    future: impl Future<Output = T> + Send + 'static,
-) -> tokio::task::JoinHandle<T> {
-    tokio::spawn(future)
-}
-
-#[cfg(feature = "tokio_console")]
 #[track_caller]
 fn spawn<T: Send + 'static>(
     name: &str,
     future: impl Future<Output = T> + Send + 'static,
 ) -> tokio::task::JoinHandle<T> {
-    tokio::task::Builder::new()
+    use tracing::Instrument;
+
+    let future = future.instrument(tracing::span!(
+        Level::TRACE,
+        "spawn",
+        name = name,
+        caller = %std::panic::Location::caller().to_string()
+    ));
+
+    #[cfg(feature = "tokio_console")]
+    return tokio::task::Builder::new()
         .name(name)
         .spawn(future)
-        .unwrap_or_else(|err| panic!("failed to spawn {name:?}: {err:?}"))
+        .unwrap_or_else(|err| panic!("failed to spawn {name:?}: {err:?}"));
+
+    #[cfg(not(feature = "tokio_console"))]
+    return tokio::spawn(future);
 }
 
 static TIME_ZONE_OFFSET: once_cell::sync::OnceCell<time::UtcOffset> =
@@ -139,8 +143,66 @@ static TIME_ZONE_OFFSET: once_cell::sync::OnceCell<time::UtcOffset> =
 static TIME_FORMAT: once_cell::sync::OnceCell<OwnedFormatItem> = once_cell::sync::OnceCell::new();
 
 fn setup_tracing(config: &Config) {
+    use tracing::Subscriber;
+    use tracing_error::ErrorLayer;
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::{filter, fmt};
+    use tracing_subscriber::{
+        filter,
+        fmt::{self, FormatEvent, FormatFields},
+        registry::LookupSpan,
+    };
+
+    struct EventFormater;
+    impl<S, N> FormatEvent<S, N> for EventFormater
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+        N: for<'a> FormatFields<'a> + 'static,
+    {
+        fn format_event(
+            &self,
+            ctx: &fmt::FmtContext<'_, S, N>,
+            mut writer: fmt::format::Writer<'_>,
+            event: &tracing::Event<'_>,
+        ) -> std::fmt::Result {
+            use color_eyre::owo_colors::OwoColorize;
+
+            let meta = event.metadata();
+
+            fmt::time::OffsetTime::new(
+                *TIME_ZONE_OFFSET.get().unwrap(),
+                TIME_FORMAT.get().unwrap(),
+            )
+            .format_time(&mut writer)?;
+
+            // TODO: check writer.has_ansi_escapes()
+
+            let level = *meta.level();
+            match level {
+                Level::TRACE => write!(writer, " {:>5} ", level.purple())?,
+                Level::DEBUG => write!(writer, " {:>5} ", level.cyan())?,
+                Level::INFO => write!(writer, " {:>5} ", level.green())?,
+                Level::WARN => write!(writer, " {:>5} ", level.yellow())?,
+                Level::ERROR => write!(writer, " {:>5} ", level.red())?,
+            }
+
+            write!(writer, "{:17}{}", meta.target().dimmed(), ":".bold())?;
+
+            /*
+            if let Some(filename) = meta.file() {
+                write!(writer, " {}{}", filename.bold(), ":".dimmed())?;
+            }
+            if let Some(line_number) = meta.line() {
+                write!(writer, "{}{}", line_number.bold(), ":".dimmed())?;
+            }
+            */
+
+            writer.write_char(' ')?;
+
+            ctx.format_fields(writer.by_ref(), event)?;
+
+            writeln!(writer)
+        }
+    }
 
     // build a `Subscriber` by combining layers with a
     // `tracing_subscriber::Registry`:
@@ -150,13 +212,11 @@ fn setup_tracing(config: &Config) {
     let registry = registry.with(console_subscriber::spawn());
 
     registry
+        .with(ErrorLayer::default())
         .with(
             fmt::layer()
                 .with_target(true)
-                .with_timer(fmt::time::OffsetTime::new(
-                    *TIME_ZONE_OFFSET.get().unwrap(),
-                    TIME_FORMAT.get().unwrap(),
-                ))
+                .event_format(EventFormater)
                 .with_filter(filter::LevelFilter::from_level(config.log_level))
                 .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
                     meta.target().starts_with("centralex")
@@ -165,6 +225,7 @@ fn setup_tracing(config: &Config) {
         .init();
 }
 
+#[instrument(skip(stream, config, port_handler))]
 async fn connection_handler(
     mut stream: TcpStream,
     addr: SocketAddr,
@@ -186,13 +247,7 @@ async fn connection_handler(
     .await;
 
     let error = match res {
-        Err(err) => {
-            let err = err
-                .downcast::<String>()
-                .map_or_else(|_| "?".to_owned(), |err| *err);
-
-            Some(format!("panic at: {err}"))
-        }
+        Err(_) => Some("internal server error".to_owned()),
         Ok(Err(err)) => Some(err.to_string()),
         Ok(Ok(())) => None,
     };
@@ -241,7 +296,9 @@ async fn connection_handler(
     let _ = stream.shutdown().await;
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> eyre::Result<()> {
+    color_eyre::install()?;
+
     let config = Arc::new(Config::load("config.json")?);
 
     assert!(!config.allowed_ports.is_empty(), "no allowed ports");
@@ -261,7 +318,7 @@ fn main() -> anyhow::Result<()> {
         .block_on(tokio_main(config))
 }
 
-async fn tokio_main(config: Arc<Config>) -> anyhow::Result<()> {
+async fn tokio_main(config: Arc<Config>) -> eyre::Result<()> {
     setup_tracing(&config);
 
     let cache_path = PathBuf::from("cache.json");
