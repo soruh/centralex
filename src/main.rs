@@ -172,6 +172,7 @@ fn main() -> anyhow::Result<()> {
                     .with(
                         fmt::layer()
                             .with_target(true)
+                            .with_ansi(true)
                             .with_timer(fmt::time::OffsetTime::new(
                                 *TIME_ZONE_OFFSET.get().unwrap(),
                                 TIME_FORMAT.get().unwrap(),
