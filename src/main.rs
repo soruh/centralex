@@ -219,7 +219,7 @@ fn setup_tracing(config: &Config) {
                 .event_format(EventFormater)
                 .with_filter(filter::LevelFilter::from_level(config.log_level))
                 .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
-                    meta.target().starts_with("centralex")
+                    meta.target().starts_with(env!("CARGO_CRATE_NAME"))
                 })),
         )
         .init();
@@ -301,8 +301,6 @@ fn main() -> eyre::Result<()> {
 
     let config = Arc::new(Config::load("config.json")?);
 
-    assert!(!config.allowed_ports.is_empty(), "no allowed ports");
-
     TIME_FORMAT.set(config.time_format.clone()).unwrap();
 
     // we need to get this while still single threaded
@@ -312,6 +310,10 @@ fn main() -> eyre::Result<()> {
         .set(time::UtcOffset::current_local_offset()?)
         .unwrap();
 
+    setup_tracing(&config);
+
+    assert!(!config.allowed_ports.is_empty(), "no allowed ports");
+
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -319,8 +321,6 @@ fn main() -> eyre::Result<()> {
 }
 
 async fn tokio_main(config: Arc<Config>) -> eyre::Result<()> {
-    setup_tracing(&config);
-
     let cache_path = PathBuf::from("cache.json");
 
     let (change_sender, change_receiver) = tokio::sync::watch::channel(Instant::now());
