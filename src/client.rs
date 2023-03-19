@@ -310,7 +310,9 @@ pub async fn handler(
 
     info!(%addr, number, port, "authenticated");
 
-    let listener = handler_metadata.listener.as_mut().unwrap(); // we are only authenticated if this is set
+    let Some(listener) = handler_metadata.listener.as_mut() else {
+        unreachable!("client sucessfully authenticated but did not set handler_metadata.listener");
+    };
 
     packet.header = Header {
         kind: PacketKind::RemConfirm.raw(),

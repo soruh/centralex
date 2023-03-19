@@ -228,7 +228,7 @@ impl PortState {
     pub fn new_state(&mut self, status: PortStatus) {
         self.last_change = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("timestamp overflow")
             .as_secs();
 
         self.status = status;
@@ -354,11 +354,9 @@ impl PortHandler {
 
         let port_guard = Rejector::start(listener, packet);
 
-        assert!(
-            self.port_guards.insert(port, port_guard).is_none(),
-            "Tried to start rejector that is already running.
-            This should have been impossible since it requires two listeners on the same port."
-        );
+        if self.port_guards.insert(port, port_guard).is_some() {
+            unreachable!("Tried to start rejector that is already running. This should have been impossible since it requires two listeners on the same port.");
+        }
         Ok(())
     }
 
@@ -451,7 +449,9 @@ impl PortHandler {
                 self.try_recover_port(config)?
             };
 
-            assert!(self.allocated_ports.insert(number, port).is_none());
+            if self.allocated_ports.insert(number, port).is_some() {
+                unreachable!("allocated port twice");
+            }
             Some(port)
         };
 
@@ -529,7 +529,7 @@ impl PortHandler {
         self.errored_ports.insert((
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .expect("timestamp overflow")
                 .as_secs(),
             port,
         ));
