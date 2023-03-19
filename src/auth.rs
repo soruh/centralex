@@ -13,10 +13,12 @@ pub async fn dyn_ip_update(
 ) -> anyhow::Result<std::net::Ipv4Addr> {
     debug!(%number, %port, "starting dyn ip update");
 
-    let mut packet = Packet::default();
-    packet.header = Header {
-        kind: PacketKind::DynIpUpdate.raw(),
-        length: 8,
+    let mut packet = Packet {
+        header: Header {
+            kind: PacketKind::DynIpUpdate.raw(),
+            length: 8,
+        },
+        data: Vec::new(),
     };
 
     packet.data.clear();

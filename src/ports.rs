@@ -67,7 +67,7 @@ fn duration_in_hours(duration: Duration) -> String {
 fn format_instant(instant: Instant) -> String {
     let when = duration_in_hours(instant.elapsed()) + " ago";
 
-    let when = (|| -> anyhow::Result<_> {
+    (|| -> anyhow::Result<_> {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)? - instant.elapsed();
         let date = time::OffsetDateTime::from_unix_timestamp(timestamp.as_secs() as i64)?
             .to_offset(*TIME_ZONE_OFFSET.get().unwrap())
@@ -75,9 +75,7 @@ fn format_instant(instant: Instant) -> String {
 
         Ok(format!("{date} ({when})"))
     })()
-    .unwrap_or(when);
-
-    when
+    .unwrap_or(when)
 }
 
 fn instant_from_timestamp(timestamp: UnixTimestamp) -> Instant {
@@ -292,14 +290,12 @@ impl PortHandler {
             let is_allocted = self
                 .allocated_ports
                 .iter()
-                .find(|(_, allocated_port)| *allocated_port == port)
-                .is_some();
+                .any(|(_, allocated_port)| allocated_port == port);
 
             let is_errored = self
                 .errored_ports
                 .iter()
-                .find(|(_, errored_port)| errored_port == port)
-                .is_some();
+                .any(|(_, errored_port)| errored_port == port);
 
             !(is_allocted || is_errored)
         });

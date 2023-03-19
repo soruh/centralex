@@ -249,7 +249,7 @@ pub async fn connection_handler(
                 packet,
             )?;
 
-            return Ok(());
+            Ok(())
         }
 
         PacketKind::RemAck => {
@@ -313,7 +313,7 @@ pub async fn connection_handler(
                     .await?;
             }
 
-            return Ok(());
+            Ok(())
         }
 
         kind => bail!("unexpected packet: {:?}", kind),

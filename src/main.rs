@@ -63,7 +63,7 @@ fn parse_log_level<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Level, 
 
     String::deserialize(deserializer)?
         .parse()
-        .map_err(|err| D::Error::custom(err))
+        .map_err(D::Error::custom)
 }
 
 fn parse_time_format<'de, D: Deserializer<'de>>(
@@ -72,7 +72,7 @@ fn parse_time_format<'de, D: Deserializer<'de>>(
     use serde::de::Error;
 
     time::format_description::parse_owned::<2>(&String::deserialize(deserializer)?)
-        .map_err(|err| D::Error::custom(err))
+        .map_err(D::Error::custom)
 }
 
 fn maybe_parse_socket_addr<'de, D: Deserializer<'de>>(
@@ -82,12 +82,10 @@ fn maybe_parse_socket_addr<'de, D: Deserializer<'de>>(
 
     Option::<String>::deserialize(deserializer)?
         .map(|s| {
-            Ok::<_, D::Error>(
-                s.to_socket_addrs()
-                    .map_err(|err| D::Error::custom(err))?
-                    .next()
-                    .ok_or_else(|| D::Error::invalid_length(0, &"one or more"))?,
-            )
+            s.to_socket_addrs()
+                .map_err(D::Error::custom)?
+                .next()
+                .ok_or_else(|| D::Error::invalid_length(0, &"one or more"))
         })
         .transpose()
 }
@@ -97,7 +95,7 @@ fn parse_socket_addr<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Socke
 
     let addr = String::deserialize(deserializer)?
         .to_socket_addrs()
-        .map_err(|err| D::Error::custom(err))?
+        .map_err(D::Error::custom)?
         .next()
         .ok_or_else(|| D::Error::invalid_length(0, &"one or more"))?;
 
