@@ -228,6 +228,12 @@ async fn connect(
     client: &mut TcpStream,
     caller: &mut TcpStream,
 ) -> eyre::Result<()> {
+    info!(
+        client_addr = print_addr(client),
+        caller_addr = print_addr(caller),
+        "connecting clients"
+    );
+
     packet.header = Header {
         kind: PacketKind::Reject.raw(),
         length: 4,
