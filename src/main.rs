@@ -310,8 +310,6 @@ fn main() -> eyre::Result<()> {
         .set(time::UtcOffset::current_local_offset()?)
         .unwrap();
 
-    setup_tracing(&config);
-
     assert!(!config.allowed_ports.is_empty(), "no allowed ports");
 
     tokio::runtime::Builder::new_multi_thread()
@@ -321,6 +319,8 @@ fn main() -> eyre::Result<()> {
 }
 
 async fn tokio_main(config: Arc<Config>) -> eyre::Result<()> {
+    setup_tracing(&config);
+
     let cache_path = PathBuf::from("cache.json");
 
     let (change_sender, change_receiver) = tokio::sync::watch::channel(Instant::now());
