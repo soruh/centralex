@@ -346,43 +346,50 @@ pub async fn handler(
         return Ok(());
    };
 
-    let recv = timeout(
-        CALL_ACK_TIMEOUT,
-        packet.recv_into_cancelation_safe(&mut reader),
-    );
+    let notify_at = Instant::now();
 
-    let Ok(res) = recv.await else {
-        writer.write_all(REJECT_TIMEOUT).await?;
-        return Ok(());
-    };
-    res?;
+    loop {
+        let recv = timeout(
+            CALL_ACK_TIMEOUT.saturating_sub(notify_at.elapsed()),
+            packet.recv_into_cancelation_safe(&mut reader),
+        );
 
-    match packet.kind() {
-        PacketKind::End | PacketKind::Reject => {
-            port_handler.lock().await.start_rejector(
-                port,
-                handler_metadata
-                    .listener
-                    .take()
-                    .expect("tried to start rejector twice"),
-                packet,
-            );
+        let Ok(res) = recv.await else {
+           writer.write_all(REJECT_TIMEOUT).await?;
+           return Ok(());
+       };
+        res?;
 
-            Ok(())
+        match packet.kind() {
+            PacketKind::Ping => {}
+            PacketKind::End | PacketKind::Reject => {
+                port_handler.lock().await.start_rejector(
+                    port,
+                    handler_metadata
+                        .listener
+                        .take()
+                        .expect("tried to start rejector twice"),
+                    packet,
+                );
+
+                return Ok(());
+            }
+
+            PacketKind::RemAck => {
+                connect(
+                    packet,
+                    port_handler,
+                    port,
+                    handler_metadata,
+                    client,
+                    &mut caller,
+                )
+                .await?;
+
+                return Ok(());
+            }
+
+            kind => return Err(eyre!("unexpected packet: {:?}", kind)),
         }
-
-        PacketKind::RemAck => {
-            connect(
-                packet,
-                port_handler,
-                port,
-                handler_metadata,
-                client,
-                &mut caller,
-            )
-            .await
-        }
-
-        kind => Err(eyre!("unexpected packet: {:?}", kind)),
     }
 }
